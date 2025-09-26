@@ -111,7 +111,14 @@ if not dep_raw.empty:
 st.subheader("2) Settings")
 col_a, col_b, col_c = st.columns([1.2, 1, 1])
 with col_a:
-    airport = st.text_input("Airport (ICAO)", value="CYYZ").strip().upper()
+    airport_input = st.text_input(
+        "Airports (ICAO — comma separated)", value="CYYZ"
+    )
+    airports = []
+    for token in airport_input.split(","):
+        code = token.strip().upper()
+        if code and code not in airports:
+            airports.append(code)
 with col_b:
     month_int = st.number_input("Month (1–12)", min_value=1, max_value=12, value=8, step=1)
 with col_c:
@@ -179,11 +186,18 @@ if not arr_raw.empty and not dep_raw.empty:
 
     st.subheader("6) Run")
     if st.button("Compute Overnights"):
+        if not airports:
+            st.error("Enter at least one airport code (e.g., CYYZ, CYUL).")
+            st.stop()
+
         # ===============================
-        # Parse & filter rows to airport
+        # Parse & normalize rows
         # ===============================
-        arr = arr_raw[arr_raw[arr_to_col].astype(str).str.upper() == airport].copy()
-        dep = dep_raw[dep_raw[dep_from_col].astype(str).str.upper() == airport].copy()
+        arr = arr_raw.copy()
+        dep = dep_raw.copy()
+
+        arr["airport_dest"] = arr[arr_to_col].astype(str).str.strip().str.upper()
+        dep["airport_origin"] = dep[dep_from_col].astype(str).str.strip().str.upper()
 
         # Parse timestamps from source tz to LOCAL_TZ
         if ts_source_tz.startswith("UTC"):
@@ -223,135 +237,133 @@ if not arr_raw.empty and not dep_raw.empty:
         arr = arr[(arr["arr_dt"] >= start_local) & (arr["arr_dt"] <= end_local)].copy()
         dep = dep[(dep["dep_dt"] >= start_local) & (dep["dep_dt"] <= end_local)].copy()
 
-        # ===============================
-        # Build on-ground intervals
-        # ===============================
-        arr = arr.sort_values(["tail", "arr_dt"])
-        dep = dep.sort_values(["tail", "dep_dt"])
-        dep_map = {t: g["dep_dt"].tolist() for t, g in dep.groupby("tail")}
+        def compute_airport_metrics(airport_code: str):
+            arr_filtered = arr[arr["airport_dest"] == airport_code].copy()
+            dep_filtered = dep[dep["airport_origin"] == airport_code].copy()
 
-        intervals_by_tail = {}
-        for tail, g in arr.groupby("tail"):
-            dep_times = dep_map.get(tail, [])
-            j = 0
-            own_intervals = []
-            for arr_t in g["arr_dt"]:
-                dep_t = None
-                while j < len(dep_times) and dep_times[j] <= arr_t:
-                    j += 1
-                if j < len(dep_times) and dep_times[j] > arr_t:
-                    dep_t = dep_times[j]
-                    j += 1
-                else:
-                    dep_t = end_local  # open through month end
-                own_intervals.append((arr_t, dep_t))
-            intervals_by_tail[tail] = own_intervals
+            arr_filtered = arr_filtered.sort_values(["tail", "arr_dt"])
+            dep_filtered = dep_filtered.sort_values(["tail", "dep_dt"])
+            dep_map = {t: g["dep_dt"].tolist() for t, g in dep_filtered.groupby("tail")}
 
-        # Optional month-start assumption
-        if assume_from_month_start:
-            first_arrivals = {tail: g["arr_dt"].min() for tail, g in arr.groupby("tail")}
-            for tail, dep_times in dep.groupby("tail"):
-                first_dep = dep_times["dep_dt"].min()
-                first_arr = first_arrivals.get(tail, pd.NaT)
-                if pd.notna(first_dep) and first_dep > start_local:
-                    if pd.isna(first_arr) or first_arr > first_dep:
-                        intervals_by_tail.setdefault(tail, []).append((start_local, first_dep))
+            intervals_by_tail = {}
+            for tail, g in arr_filtered.groupby("tail"):
+                dep_times = dep_map.get(tail, [])
+                j = 0
+                own_intervals = []
+                for arr_t in g["arr_dt"]:
+                    dep_t = None
+                    while j < len(dep_times) and dep_times[j] <= arr_t:
+                        j += 1
+                    if j < len(dep_times) and dep_times[j] > arr_t:
+                        dep_t = dep_times[j]
+                        j += 1
+                    else:
+                        dep_t = end_local  # open through month end
+                    own_intervals.append((arr_t, dep_t))
+                intervals_by_tail[tail] = own_intervals
 
-        # Clip & merge overlaps
-        for tail, ivls in list(intervals_by_tail.items()):
-            clipped = []
-            for s, e in ivls:
-                if e < start_local or s > end_local:
-                    continue
-                s2 = max(s, start_local)
-                e2 = min(e, end_local)
-                if e2 > s2:
-                    clipped.append((s2, e2))
-            intervals_by_tail[tail] = merge_intervals(clipped)
+            if assume_from_month_start:
+                first_arrivals = {tail: g["arr_dt"].min() for tail, g in arr_filtered.groupby("tail")}
+                for tail, dep_times in dep_filtered.groupby("tail"):
+                    first_dep = dep_times["dep_dt"].min()
+                    first_arr = first_arrivals.get(tail, pd.NaT)
+                    if pd.notna(first_dep) and first_dep > start_local:
+                        if pd.isna(first_arr) or first_arr > first_dep:
+                            intervals_by_tail.setdefault(tail, []).append((start_local, first_dep))
 
-        # ===============================
-        # Metric A: presence at check_hour
-        # ===============================
-        dates = pd.date_range(start_local.date(), end_local.date(), freq="D")
-        rows_A = []
-        for d in dates:
-            check_dt = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, check_hour.hour, check_hour.minute)) + timedelta(days=1)
-            present = [t for t, ivls in intervals_by_tail.items() if any(s <= check_dt <= e for s, e in ivls)]
-            rows_A.append({
-                "Date": pd.to_datetime(d),
-                "Overnights_A_check": len(present),
-                "Tails_A": ", ".join(sorted(present))
-            })
-        df_A = pd.DataFrame(rows_A)
-
-        # ===============================
-        # Metric B: >= threshold within night window
-        # ===============================
-        rows_B = []
-        for d in dates:
-            win_start = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_start.hour, night_start.minute))
-            if night_end <= night_start:
-                win_end = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_end.hour, night_end.minute)) + timedelta(days=1)
-            else:
-                win_end = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_end.hour, night_end.minute))
-
-            present_B = []
-            for tail, ivls in intervals_by_tail.items():
-                total = timedelta(0)
+            for tail, ivls in list(intervals_by_tail.items()):
+                clipped = []
                 for s, e in ivls:
-                    total += overlap(s, e, win_start, win_end)
-                    if total >= timedelta(hours=float(threshold_hours)):
-                        present_B.append(tail)
-                        break
-            rows_B.append({
-                "Date": pd.to_datetime(d),
-                "Overnights_B_nightwindow": len(present_B),
-                "Tails_B": ", ".join(sorted(present_B))
-            })
-        df_B = pd.DataFrame(rows_B)
+                    if e < start_local or s > end_local:
+                        continue
+                    s2 = max(s, start_local)
+                    e2 = min(e, end_local)
+                    if e2 > s2:
+                        clipped.append((s2, e2))
+                intervals_by_tail[tail] = merge_intervals(clipped)
 
-        # ===============================
-        # Combine + diagnostics
-        # ===============================
-        combined = df_A.merge(df_B, on="Date", how="outer").sort_values("Date").reset_index(drop=True)
-        combined["Delta_B_minus_A"] = combined["Overnights_B_nightwindow"] - combined["Overnights_A_check"]
-
-        diag_rows = []
-        for tail, ivls in sorted(intervals_by_tail.items()):
-            for s, e in ivls:
-                diag_rows.append({
-                    "Tail": tail,
-                    "OnGround_Start_Local": s,
-                    "OnGround_End_Local": e,
-                    "Hours": (e - s).total_seconds() / 3600.0
+            dates = pd.date_range(start_local.date(), end_local.date(), freq="D")
+            rows_A = []
+            for d in dates:
+                check_dt = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, check_hour.hour, check_hour.minute)) + timedelta(days=1)
+                present = [t for t, ivls in intervals_by_tail.items() if any(s <= check_dt <= e for s, e in ivls)]
+                rows_A.append({
+                    "Date": pd.to_datetime(d),
+                    "Overnights_A_check": len(present),
+                    "Tails_A": ", ".join(sorted(present))
                 })
-        diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
+            df_A = pd.DataFrame(rows_A)
 
-        st.success("Computed!")
+            rows_B = []
+            for d in dates:
+                win_start = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_start.hour, night_start.minute))
+                if night_end <= night_start:
+                    win_end = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_end.hour, night_end.minute)) + timedelta(days=1)
+                else:
+                    win_end = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_end.hour, night_end.minute))
+
+                present_B = []
+                for tail, ivls in intervals_by_tail.items():
+                    total = timedelta(0)
+                    for s, e in ivls:
+                        total += overlap(s, e, win_start, win_end)
+                        if total >= timedelta(hours=float(threshold_hours)):
+                            present_B.append(tail)
+                            break
+                rows_B.append({
+                    "Date": pd.to_datetime(d),
+                    "Overnights_B_nightwindow": len(present_B),
+                    "Tails_B": ", ".join(sorted(present_B))
+                })
+            df_B = pd.DataFrame(rows_B)
+
+            combined = df_A.merge(df_B, on="Date", how="outer").sort_values("Date").reset_index(drop=True)
+            combined["Delta_B_minus_A"] = combined["Overnights_B_nightwindow"] - combined["Overnights_A_check"]
+
+            diag_rows = []
+            for tail, ivls in sorted(intervals_by_tail.items()):
+                for s, e in ivls:
+                    diag_rows.append({
+                        "Tail": tail,
+                        "OnGround_Start_Local": s,
+                        "OnGround_End_Local": e,
+                        "Hours": (e - s).total_seconds() / 3600.0
+                    })
+            diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
+
+            return combined, diagnostics
+
+        metrics = {apt: compute_airport_metrics(apt) for apt in airports}
+
+        st.success(f"Computed for {', '.join(airports)}!")
 
         st.subheader("Results")
-        st.dataframe(combined, use_container_width=True)
+        tabs = st.tabs([f"{apt}" for apt in airports])
+        for tab, apt in zip(tabs, airports):
+            combined, diagnostics = metrics[apt]
+            with tab:
+                st.markdown(f"### {apt}")
+                st.dataframe(combined, use_container_width=True)
 
-        st.subheader("Diagnostics (on-ground intervals per tail)")
-        st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
-        st.dataframe(diagnostics, use_container_width=True, height=400)
+                st.subheader("Diagnostics (on-ground intervals per tail)")
+                st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
+                st.dataframe(diagnostics, use_container_width=True, height=400)
 
-        # Downloads
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            st.download_button(
-                "Download results (CSV)",
-                data=combined.to_csv(index=False).encode("utf-8"),
-                file_name=f"{airport}_overnights_{int(year_int)}-{int(month_int):02d}_metrics.csv",
-                mime="text/csv"
-            )
-        with col_d2:
-            st.download_button(
-                "Download diagnostics (CSV)",
-                data=diagnostics.to_csv(index=False).encode("utf-8"),
-                file_name=f"{airport}_overnight_intervals_{int(year_int)}-{int(month_int):02d}_diagnostics.csv",
-                mime="text/csv"
-            )
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.download_button(
+                        "Download results (CSV)",
+                        data=combined.to_csv(index=False).encode("utf-8"),
+                        file_name=f"{apt}_overnights_{int(year_int)}-{int(month_int):02d}_metrics.csv",
+                        mime="text/csv"
+                    )
+                with col_d2:
+                    st.download_button(
+                        "Download diagnostics (CSV)",
+                        data=diagnostics.to_csv(index=False).encode("utf-8"),
+                        file_name=f"{apt}_overnight_intervals_{int(year_int)}-{int(month_int):02d}_diagnostics.csv",
+                        mime="text/csv"
+                    )
 
         st.markdown(
             f"**Notes:**\n"
