@@ -275,7 +275,7 @@ if not arr_raw.empty and not dep_raw.empty:
         dates = pd.date_range(start_local.date(), end_local.date(), freq="D")
         rows_A = []
         for d in dates:
-            check_dt = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, check_hour.hour, check_hour.minute))
+            check_dt = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, check_hour.hour, check_hour.minute)) + timedelta(days=1)
             present = [t for t, ivls in intervals_by_tail.items() if any(s <= check_dt <= e for s, e in ivls)]
             rows_A.append({
                 "Date": pd.to_datetime(d),
@@ -355,7 +355,7 @@ if not arr_raw.empty and not dep_raw.empty:
 
         st.markdown(
             f"**Notes:**\n"
-            f"- Metric A counts a tail if on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}**.\n"
+            f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
             f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
             f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
             f"- Month-start assumption is **{'ON' if assume_from_month_start else 'OFF'}**.\n"
