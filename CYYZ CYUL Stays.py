@@ -161,8 +161,12 @@ if not arr_raw.empty and not dep_raw.empty:
     st.subheader("6) Run")
     if st.button("Compute Overnights"):
         # Parse & filter
-        arr = arr_raw[arr_raw[arr_to_col].astype(str).str.upper() == airport].copy()
-        dep = dep_raw[dep_raw[dep_from_col].astype(str).str.upper() == airport].copy()
+        arr = arr_raw[
+            arr_raw[arr_to_col].astype(str).str.strip().str.upper() == airport
+        ].copy()
+        dep = dep_raw[
+            dep_raw[dep_from_col].astype(str).str.strip().str.upper() == airport
+        ].copy()
 
         if ts_source_tz.startswith("UTC"):
             arr["arr_dt"] = utc_to_local(arr[arr_time_col], LOCAL_TZ)
