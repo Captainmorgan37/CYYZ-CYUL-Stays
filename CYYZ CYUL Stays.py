@@ -269,17 +269,13 @@ if not arr_raw.empty and not dep_raw.empty:
         arr = arr.dropna(subset=["arr_dt"])
         dep = dep.dropna(subset=["dep_dt"])
 
-        # Month window
+        # Month window (used for clipping/reporting, but we keep surrounding events for proper pairing)
         start_local = LOCAL_TZ.localize(datetime(int(year_int), int(month_int), 1, 0, 0, 0))
         if int(month_int) == 12:
             end_month_start = LOCAL_TZ.localize(datetime(int(year_int) + 1, 1, 1, 0, 0, 0))
         else:
             end_month_start = LOCAL_TZ.localize(datetime(int(year_int), int(month_int) + 1, 1, 0, 0, 0))
         end_local = end_month_start - timedelta(seconds=1)
-
-        # Keep only events inside month (helps pairing clarity)
-        arr = arr[(arr["arr_dt"] >= start_local) & (arr["arr_dt"] <= end_local)].copy()
-        dep = dep[(dep["dep_dt"] >= start_local) & (dep["dep_dt"] <= end_local)].copy()
 
         def compute_airport_metrics(airport_code: str):
             arr_filtered = arr[arr["airport_dest"] == airport_code].copy()
@@ -457,6 +453,7 @@ if not arr_raw.empty and not dep_raw.empty:
             f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
             f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
             f"- Month-start assumption is **{'ON' if assume_from_month_start else 'OFF'}**.\n"
+            f"- Arrivals/departures just outside the month are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
             f"- If results look empty for the first week, double-check the **day-first** toggle and that files are for the chosen month/year.\n"
         )
 else:
