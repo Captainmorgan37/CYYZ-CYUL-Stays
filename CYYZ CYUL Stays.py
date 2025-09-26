@@ -1,3 +1,4 @@
+# overnights_cyyz.py
 import io
 from datetime import datetime, timedelta, time
 import pandas as pd
@@ -16,6 +17,7 @@ st.caption("Upload FL3XX arrivals/departures CSVs for a month and compute overni
 # ===============================
 @st.cache_data(show_spinner=False)
 def flexible_read_csv(file) -> pd.DataFrame:
+    """Try common delimiters; fall back to default."""
     if file is None:
         return pd.DataFrame()
     content = file.read()
@@ -24,6 +26,7 @@ def flexible_read_csv(file) -> pd.DataFrame:
         try:
             bio.seek(0)
             df = pd.read_csv(bio, sep=sep, engine="python")
+            # If we guessed wrong (single col but separators inside), try next
             if df.shape[1] == 1 and any(s in str(df.iloc[0, 0]) for s in [",", ";", "\t"]):
                 continue
             return df
@@ -33,6 +36,7 @@ def flexible_read_csv(file) -> pd.DataFrame:
     return pd.read_csv(bio)
 
 def pick_col(cols, preferred_list):
+    """Return the first exact (case-insensitive) match; else first 'contains' match; else None."""
     low = {c.lower(): c for c in cols}
     for p in preferred_list:
         if p.lower() in low:
@@ -43,11 +47,20 @@ def pick_col(cols, preferred_list):
                 return c
     return None
 
-def utc_to_local(series: pd.Series, local_tz: pytz.timezone) -> pd.Series:
-    dt = pd.to_datetime(series, errors="coerce", utc=True, infer_datetime_format=True)
-    return dt.dt.tz_convert(local_tz)
+def parse_flexible_utc_to_local(series: pd.Series, local_tz: pytz.timezone, dayfirst: bool = True) -> pd.Series:
+    """
+    Robust parser for FL3XX-like strings, e.g. '01.08.2025 20:48z'
+    - normalizes trailing 'z'/'Z' to '+00:00'
+    - supports dot-separated day-first dates
+    - converts to the provided local timezone
+    """
+    s = series.astype(str).str.strip()
+    s = s.str.replace(r'(?i)z$', '+00:00', regex=True)  # normalize trailing Z
+    dt_utc = pd.to_datetime(s, errors="coerce", utc=True, dayfirst=dayfirst, infer_datetime_format=True)
+    return dt_utc.dt.tz_convert(local_tz)
 
 def localize_naive(series: pd.Series, local_tz: pytz.timezone) -> pd.Series:
+    """Treat timestamps as local; handle naive or already tz-aware values."""
     out = []
     for v in pd.to_datetime(series, errors="coerce", infer_datetime_format=True):
         if pd.isna(v):
@@ -57,6 +70,7 @@ def localize_naive(series: pd.Series, local_tz: pytz.timezone) -> pd.Series:
     return pd.Series(out)
 
 def merge_intervals(intervals):
+    """Intervals: list[(start_dt, end_dt)] in same tz. Returns merged sorted list."""
     if not intervals:
         return []
     intervals = sorted(intervals, key=lambda x: x[0])
@@ -117,13 +131,19 @@ with col_tz2:
         index=0
     )
 LOCAL_TZ = pytz.timezone(local_tz_name)
+
+# New: day-first parsing toggle (for '01.08.2025' = 1 Aug 2025)
+dayfirst_ui = st.checkbox("Parse dates as day-first (e.g., 01.08.2025 = 1 Aug 2025)", value=True)
+
 st.caption("All calculations are performed in the selected **Local timezone** (default America/Toronto).")
 
-# Column mapping
+# Column mapping UI
 if not arr_raw.empty and not dep_raw.empty:
     st.subheader("3) Column Mapping")
     arr_cols = list(arr_raw.columns)
     dep_cols = list(dep_raw.columns)
+
+    # Sensible defaults (prefer Actual)
     default_arr_tail = pick_col(arr_cols, ["Aircraft", "Tail", "Registration", "A/C"])
     default_dep_tail = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
     default_to = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
@@ -150,7 +170,6 @@ if not arr_raw.empty and not dep_raw.empty:
         night_end = st.time_input("Metric B — Night window end (local, next day)", value=time(6, 0))
     threshold_hours = st.slider("Metric B — Minimum on-ground within night window (hours)", 0.0, 12.0, 5.0, 0.5)
 
-    # NEW: toggle for month-start assumption (default OFF = stricter)
     st.subheader("5) Pairing Options")
     assume_from_month_start = st.checkbox(
         "Assume a tail with departures but no arrivals this month was already on-ground from month start",
@@ -160,29 +179,41 @@ if not arr_raw.empty and not dep_raw.empty:
 
     st.subheader("6) Run")
     if st.button("Compute Overnights"):
-        # Parse & filter
-        arr = arr_raw[
-            arr_raw[arr_to_col].astype(str).str.strip().str.upper() == airport
-        ].copy()
-        dep = dep_raw[
-            dep_raw[dep_from_col].astype(str).str.strip().str.upper() == airport
-        ].copy()
+        # ===============================
+        # Parse & filter rows to airport
+        # ===============================
+        arr = arr_raw[arr_raw[arr_to_col].astype(str).str.upper() == airport].copy()
+        dep = dep_raw[dep_raw[dep_from_col].astype(str).str.upper() == airport].copy()
 
+        # Parse timestamps from source tz to LOCAL_TZ
         if ts_source_tz.startswith("UTC"):
-            arr["arr_dt"] = utc_to_local(arr[arr_time_col], LOCAL_TZ)
-            dep["dep_dt"] = utc_to_local(dep[dep_time_col], LOCAL_TZ)
+            arr["arr_dt"] = parse_flexible_utc_to_local(arr[arr_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
+            dep["dep_dt"] = parse_flexible_utc_to_local(dep[dep_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
         else:
             arr["arr_dt"] = localize_naive(arr[arr_time_col], LOCAL_TZ)
             dep["dep_dt"] = localize_naive(dep[dep_time_col], LOCAL_TZ)
 
+        # Sanity check BEFORE month filter
+        all_parsed = pd.concat([arr["arr_dt"].dropna(), dep["dep_dt"].dropna()])
+        if not all_parsed.empty:
+            month_hits = ((all_parsed.dt.year == int(year_int)) & (all_parsed.dt.month == int(month_int))).mean()
+            if month_hits < 0.2:
+                st.warning(
+                    "Heads up: Most parsed timestamps are NOT in the chosen month/year. "
+                    "This usually means the date format (day-first) toggle is wrong or the files use a different month."
+                )
+
+        # Normalize tail
         arr["tail"] = arr[tail_arr].astype(str).str.strip().str.upper()
         dep["tail"] = dep[tail_dep].astype(str).str.strip().str.upper()
 
+        # Drop missing datetimes
         arr = arr.dropna(subset=["arr_dt"])
         dep = dep.dropna(subset=["dep_dt"])
 
+        # Month window
         start_local = LOCAL_TZ.localize(datetime(int(year_int), int(month_int), 1, 0, 0, 0))
-        if month_int == 12:
+        if int(month_int) == 12:
             end_month_start = LOCAL_TZ.localize(datetime(int(year_int) + 1, 1, 1, 0, 0, 0))
         else:
             end_month_start = LOCAL_TZ.localize(datetime(int(year_int), int(month_int) + 1, 1, 0, 0, 0))
@@ -192,7 +223,9 @@ if not arr_raw.empty and not dep_raw.empty:
         arr = arr[(arr["arr_dt"] >= start_local) & (arr["arr_dt"] <= end_local)].copy()
         dep = dep[(dep["dep_dt"] >= start_local) & (dep["dep_dt"] <= end_local)].copy()
 
-        # Build intervals
+        # ===============================
+        # Build on-ground intervals
+        # ===============================
         arr = arr.sort_values(["tail", "arr_dt"])
         dep = dep.sort_values(["tail", "dep_dt"])
         dep_map = {t: g["dep_dt"].tolist() for t, g in dep.groupby("tail")}
@@ -210,11 +243,11 @@ if not arr_raw.empty and not dep_raw.empty:
                     dep_t = dep_times[j]
                     j += 1
                 else:
-                    dep_t = end_local
+                    dep_t = end_local  # open through month end
                 own_intervals.append((arr_t, dep_t))
             intervals_by_tail[tail] = own_intervals
 
-        # Month-start assumption (now optional)
+        # Optional month-start assumption
         if assume_from_month_start:
             tails_with_dep = set(dep["tail"].unique())
             tails_with_arr = set(arr["tail"].unique())
@@ -236,7 +269,9 @@ if not arr_raw.empty and not dep_raw.empty:
                     clipped.append((s2, e2))
             intervals_by_tail[tail] = merge_intervals(clipped)
 
-        # Metric A
+        # ===============================
+        # Metric A: presence at check_hour
+        # ===============================
         dates = pd.date_range(start_local.date(), end_local.date(), freq="D")
         rows_A = []
         for d in dates:
@@ -249,7 +284,9 @@ if not arr_raw.empty and not dep_raw.empty:
             })
         df_A = pd.DataFrame(rows_A)
 
-        # Metric B
+        # ===============================
+        # Metric B: >= threshold within night window
+        # ===============================
         rows_B = []
         for d in dates:
             win_start = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_start.hour, night_start.minute))
@@ -273,10 +310,12 @@ if not arr_raw.empty and not dep_raw.empty:
             })
         df_B = pd.DataFrame(rows_B)
 
+        # ===============================
+        # Combine + diagnostics
+        # ===============================
         combined = df_A.merge(df_B, on="Date", how="outer").sort_values("Date").reset_index(drop=True)
         combined["Delta_B_minus_A"] = combined["Overnights_B_nightwindow"] - combined["Overnights_A_check"]
 
-        # Diagnostics
         diag_rows = []
         for tail, ivls in sorted(intervals_by_tail.items()):
             for s, e in ivls:
@@ -320,6 +359,7 @@ if not arr_raw.empty and not dep_raw.empty:
             f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
             f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
             f"- Month-start assumption is **{'ON' if assume_from_month_start else 'OFF'}**.\n"
+            f"- If results look empty for the first week, double-check the **day-first** toggle and that files are for the chosen month/year.\n"
         )
 else:
     st.info("Upload both CSVs to configure column mapping and run the calculation.")
