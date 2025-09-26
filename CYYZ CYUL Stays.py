@@ -9,7 +9,7 @@ import streamlit as st
 # ===============================
 st.set_page_config(page_title="CYYZ Overnights Calculator", layout="wide")
 st.title("CYYZ Overnights Calculator")
-st.caption("Upload FL3XX arrivals/departures CSVs for a month and compute overnight counts by day.")
+st.caption("Upload FL3XX arrivals/departures CSVs for a month and compute overnight counts by day (two metrics).")
 
 # ===============================
 # Helpers
@@ -21,7 +21,6 @@ def flexible_read_csv(file) -> pd.DataFrame:
     if file is None:
         return pd.DataFrame()
     content = file.read()
-    # Re-wrap into BytesIO for multiple reads
     bio = io.BytesIO(content)
     for sep in [",", ";", "\t"]:
         try:
@@ -123,11 +122,11 @@ with col_tz2:
     local_tz_name = st.selectbox(
         "Local timezone (for calculations & display)",
         ["America/Toronto", "America/Edmonton", "UTC"] + sorted(pytz.all_timezones),
-        index=["America/Toronto", "America/Edmonton", "UTC"].index("America/Toronto")
+        index=0
     )
 LOCAL_TZ = pytz.timezone(local_tz_name)
 
-st.caption("Note: All calculations are performed in the selected **Local timezone** (default America/Toronto).")
+st.caption("All calculations are performed in the selected **Local timezone** (default America/Toronto).")
 
 # Column mapping UI once files are present
 if not arr_raw.empty and not dep_raw.empty:
@@ -189,7 +188,6 @@ if not arr_raw.empty and not dep_raw.empty:
 
         # Month window
         start_local = LOCAL_TZ.localize(datetime(int(year_int), int(month_int), 1, 0, 0, 0))
-        # Compute next month safely
         if month_int == 12:
             end_month_start = LOCAL_TZ.localize(datetime(int(year_int) + 1, 1, 1, 0, 0, 0))
         else:
@@ -225,7 +223,7 @@ if not arr_raw.empty and not dep_raw.empty:
                 own_intervals.append((arr_t, dep_t))
             intervals_by_tail[tail] = own_intervals
 
-        # Tails with August dep but no Aug arrival -> assume parked from month start until first departure
+        # Tails with month departures but no month arrivals -> assume parked from month start until first departure
         tails_with_dep = set(dep["tail"].unique())
         tails_with_arr = set(arr["tail"].unique())
         for tail in tails_with_dep:
@@ -247,7 +245,7 @@ if not arr_raw.empty and not dep_raw.empty:
             intervals_by_tail[tail] = merge_intervals(clipped)
 
         # ===============================
-        # Metric A: 03:00 (configurable) presence
+        # Metric A: presence at check_hour
         # ===============================
         dates = pd.date_range(start_local.date(), end_local.date(), freq="D")
         rows_A = []
@@ -257,19 +255,20 @@ if not arr_raw.empty and not dep_raw.empty:
             for tail, ivls in intervals_by_tail.items():
                 if any(s <= check_dt <= e for s, e in ivls):
                     present.append(tail)
-            rows_A.append({"Date": pd.to_datetime(d), "Overnights_A_check", len(present), "Tails_A": ", ".join(sorted(present))})
+            rows_A.append({
+                "Date": pd.to_datetime(d),
+                "Overnights_A_check": len(present),
+                "Tails_A": ", ".join(sorted(present))
+            })
         df_A = pd.DataFrame(rows_A)
 
         # ===============================
         # Metric B: >= threshold within night window
         # ===============================
-        # Interpret night window as [night_start, next-day night_end]
-        # If night_end <= night_start, we add a day (e.g., 20:00 -> 06:00 next day)
         night_rows = []
-        night_delta_hours = float(threshold_hours)
         for d in dates:
             win_start = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_start.hour, night_start.minute))
-            # compute window end
+            # compute window end (span midnight if needed)
             if night_end <= night_start:
                 win_end = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_end.hour, night_end.minute)) + timedelta(days=1)
             else:
@@ -280,12 +279,12 @@ if not arr_raw.empty and not dep_raw.empty:
                 total = timedelta(0)
                 for s, e in ivls:
                     total += overlap(s, e, win_start, win_end)
-                    if total >= timedelta(hours=night_delta_hours):
+                    if total >= timedelta(hours=float(threshold_hours)):
                         present_B.append(tail)
                         break
             night_rows.append({
                 "Date": pd.to_datetime(d),
-                "Overnights_B_nightwindow", len(present_B),
+                "Overnights_B_nightwindow": len(present_B),
                 "Tails_B": ", ".join(sorted(present_B))
             })
         df_B = pd.DataFrame(night_rows)
@@ -324,22 +323,21 @@ if not arr_raw.empty and not dep_raw.empty:
             st.download_button(
                 "Download results (CSV)",
                 data=detail_csv,
-                file_name=f"{airport}_overnights_{year_int}-{month_int:02d}_metrics.csv",
+                file_name=f"{airport}_overnights_{int(year_int)}-{int(month_int):02d}_metrics.csv",
                 mime="text/csv"
             )
         with col_d2:
             st.download_button(
                 "Download diagnostics (CSV)",
                 data=diag_csv,
-                file_name=f"{airport}_overnight_intervals_{year_int}-{month_int:02d}_diagnostics.csv",
+                file_name=f"{airport}_overnight_intervals_{int(year_int)}-{int(month_int):02d}_diagnostics.csv",
                 mime="text/csv"
             )
 
-        # Small summary
         st.markdown(
             f"**Notes:**\n"
             f"- Metric A counts a tail if on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}**.\n"
-            f"- Metric B counts a tail if on-ground **≥ {night_delta_hours:.1f} h** within "
+            f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
             f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
             f"- If a tail departs in the month without an in-month arrival, it is assumed on-ground from the **month start** until its first departure.\n"
         )
