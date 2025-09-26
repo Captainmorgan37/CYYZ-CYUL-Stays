@@ -172,9 +172,9 @@ if not arr_raw.empty and not dep_raw.empty:
 
     st.subheader("5) Pairing Options")
     assume_from_month_start = st.checkbox(
-        "Assume a tail with departures but no arrivals this month was already on-ground from month start",
+        "Assume a tail with departures but no earlier arrivals this month was already on-ground from month start",
         value=False,
-        help="Disable to avoid false overnights when the aircraft may have arrived before the month and you don't want to credit early dates."
+        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the month) as being present from the start of the month."
     )
 
     st.subheader("6) Run")
@@ -249,12 +249,12 @@ if not arr_raw.empty and not dep_raw.empty:
 
         # Optional month-start assumption
         if assume_from_month_start:
-            tails_with_dep = set(dep["tail"].unique())
-            tails_with_arr = set(arr["tail"].unique())
-            for tail in tails_with_dep:
-                if tail not in tails_with_arr:
-                    first_dep = dep[dep["tail"] == tail]["dep_dt"].min()
-                    if pd.notna(first_dep) and first_dep > start_local:
+            first_arrivals = {tail: g["arr_dt"].min() for tail, g in arr.groupby("tail")}
+            for tail, dep_times in dep.groupby("tail"):
+                first_dep = dep_times["dep_dt"].min()
+                first_arr = first_arrivals.get(tail, pd.NaT)
+                if pd.notna(first_dep) and first_dep > start_local:
+                    if pd.isna(first_arr) or first_arr > first_dep:
                         intervals_by_tail.setdefault(tail, []).append((start_local, first_dep))
 
         # Clip & merge overlaps
