@@ -88,6 +88,33 @@ def overlap(a_start, a_end, b_start, b_end):
     e = min(a_end, b_end)
     return max(timedelta(0), e - s)
 
+
+EMBRAER_PREFIXES = ("E54", "E55")
+CJ_PREFIXES = ("C25",)
+
+
+def classify_aircraft_type(type_code: str) -> str:
+    """Classify the aircraft type into embraer/cj/other/unknown buckets."""
+    code = (type_code or "").strip().upper()
+    if not code:
+        return "unknown"
+    if any(code.startswith(prefix) for prefix in EMBRAER_PREFIXES):
+        return "embraer"
+    if any(code.startswith(prefix) for prefix in CJ_PREFIXES):
+        return "cj"
+    return "other"
+
+
+def build_results_csv(combined: pd.DataFrame, summary_counts: pd.DataFrame) -> bytes:
+    """Create a CSV output with a clear summary section appended."""
+    buffer = io.StringIO()
+    buffer.write("# Detailed daily results\n")
+    combined.to_csv(buffer, index=False)
+    buffer.write("\n# Summary counts by aircraft category\n")
+    summary_counts.to_csv(buffer, index=False)
+    return buffer.getvalue().encode("utf-8")
+
+
 # ===============================
 # Inputs
 # ===============================
@@ -157,16 +184,24 @@ if not arr_raw.empty and not dep_raw.empty:
     default_from = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
     default_arr_time = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
     default_dep_time = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
+    default_arr_type = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
+    default_dep_type = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
 
     c1, c2 = st.columns(2)
     with c1:
         tail_arr = st.selectbox("Arrivals: Tail/Registration", arr_cols, index=arr_cols.index(default_arr_tail) if default_arr_tail in arr_cols else 0)
         arr_to_col = st.selectbox("Arrivals: To (ICAO)", arr_cols, index=arr_cols.index(default_to) if default_to in arr_cols else 0)
         arr_time_col = st.selectbox("Arrivals: Arrival time", arr_cols, index=arr_cols.index(default_arr_time) if default_arr_time in arr_cols else 0)
+        arr_type_options = ["<None>"] + arr_cols
+        arr_type_idx = arr_type_options.index(default_arr_type) if default_arr_type in arr_cols else 0
+        arr_type_col = st.selectbox("Arrivals: Aircraft type (optional)", arr_type_options, index=arr_type_idx)
     with c2:
         tail_dep = st.selectbox("Departures: Tail/Registration", dep_cols, index=dep_cols.index(default_dep_tail) if default_dep_tail in dep_cols else 0)
         dep_from_col = st.selectbox("Departures: From (ICAO)", dep_cols, index=dep_cols.index(default_from) if default_from in dep_cols else 0)
         dep_time_col = st.selectbox("Departures: Departure time", dep_cols, index=dep_cols.index(default_dep_time) if default_dep_time in dep_cols else 0)
+        dep_type_options = ["<None>"] + dep_cols
+        dep_type_idx = dep_type_options.index(default_dep_type) if default_dep_type in dep_cols else 0
+        dep_type_col = st.selectbox("Departures: Aircraft type (optional)", dep_type_options, index=dep_type_idx)
 
     st.subheader("4) Overnight Definitions")
     col_m1, col_m2 = st.columns(2)
@@ -221,6 +256,15 @@ if not arr_raw.empty and not dep_raw.empty:
         arr["tail"] = arr[tail_arr].astype(str).str.strip().str.upper()
         dep["tail"] = dep[tail_dep].astype(str).str.strip().str.upper()
 
+        if arr_type_col != "<None>":
+            arr["aircraft_type"] = arr[arr_type_col].astype(str).str.strip().str.upper()
+        else:
+            arr["aircraft_type"] = ""
+        if dep_type_col != "<None>":
+            dep["aircraft_type"] = dep[dep_type_col].astype(str).str.strip().str.upper()
+        else:
+            dep["aircraft_type"] = ""
+
         # Drop missing datetimes
         arr = arr.dropna(subset=["arr_dt"])
         dep = dep.dropna(subset=["dep_dt"])
@@ -240,6 +284,15 @@ if not arr_raw.empty and not dep_raw.empty:
         def compute_airport_metrics(airport_code: str):
             arr_filtered = arr[arr["airport_dest"] == airport_code].copy()
             dep_filtered = dep[dep["airport_origin"] == airport_code].copy()
+
+            tail_type_map = {}
+            for df_types in (arr_filtered, dep_filtered):
+                if "aircraft_type" in df_types.columns:
+                    for tail_val, type_val in zip(df_types["tail"], df_types["aircraft_type"]):
+                        tail_clean = str(tail_val).strip().upper()
+                        type_clean = str(type_val).strip().upper()
+                        if tail_clean and type_clean and tail_clean not in tail_type_map:
+                            tail_type_map[tail_clean] = type_clean
 
             arr_filtered = arr_filtered.sort_values(["tail", "arr_dt"])
             dep_filtered = dep_filtered.sort_values(["tail", "dep_dt"])
@@ -286,11 +339,17 @@ if not arr_raw.empty and not dep_raw.empty:
             rows_A = []
             for d in dates:
                 check_dt = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, check_hour.hour, check_hour.minute)) + timedelta(days=1)
-                present = [t for t, ivls in intervals_by_tail.items() if any(s <= check_dt <= e for s, e in ivls)]
+                present = sorted([t for t, ivls in intervals_by_tail.items() if any(s <= check_dt <= e for s, e in ivls)])
+                emb_tails = sorted([t for t in present if classify_aircraft_type(tail_type_map.get(t, "")) == "embraer"])
+                cj_tails = sorted([t for t in present if classify_aircraft_type(tail_type_map.get(t, "")) == "cj"])
                 rows_A.append({
                     "Date": pd.to_datetime(d),
                     "Overnights_A_check": len(present),
-                    "Tails_A": ", ".join(sorted(present))
+                    "Tails_A": ", ".join(present),
+                    "Embraer_A_Count": len(emb_tails),
+                    "Embraer_A_Tails": ", ".join(emb_tails),
+                    "CJ_A_Count": len(cj_tails),
+                    "CJ_A_Tails": ", ".join(cj_tails),
                 })
             df_A = pd.DataFrame(rows_A)
 
@@ -310,15 +369,38 @@ if not arr_raw.empty and not dep_raw.empty:
                         if total >= timedelta(hours=float(threshold_hours)):
                             present_B.append(tail)
                             break
+                present_B = sorted(present_B)
+                emb_tails_b = sorted([t for t in present_B if classify_aircraft_type(tail_type_map.get(t, "")) == "embraer"])
+                cj_tails_b = sorted([t for t in present_B if classify_aircraft_type(tail_type_map.get(t, "")) == "cj"])
                 rows_B.append({
                     "Date": pd.to_datetime(d),
                     "Overnights_B_nightwindow": len(present_B),
-                    "Tails_B": ", ".join(sorted(present_B))
+                    "Tails_B": ", ".join(present_B),
+                    "Embraer_B_Count": len(emb_tails_b),
+                    "Embraer_B_Tails": ", ".join(emb_tails_b),
+                    "CJ_B_Count": len(cj_tails_b),
+                    "CJ_B_Tails": ", ".join(cj_tails_b),
                 })
             df_B = pd.DataFrame(rows_B)
 
             combined = df_A.merge(df_B, on="Date", how="outer").sort_values("Date").reset_index(drop=True)
             combined["Delta_B_minus_A"] = combined["Overnights_B_nightwindow"] - combined["Overnights_A_check"]
+
+            summary_A = combined[["Date", "Overnights_A_check", "Embraer_A_Count", "CJ_A_Count"]].rename(columns={
+                "Overnights_A_check": "Total_Tails",
+                "Embraer_A_Count": "Embraer_Count",
+                "CJ_A_Count": "CJ_Count",
+            })
+            summary_A["Metric"] = "Metric A"
+            summary_B = combined[["Date", "Overnights_B_nightwindow", "Embraer_B_Count", "CJ_B_Count"]].rename(columns={
+                "Overnights_B_nightwindow": "Total_Tails",
+                "Embraer_B_Count": "Embraer_Count",
+                "CJ_B_Count": "CJ_Count",
+            })
+            summary_B["Metric"] = "Metric B"
+            summary_counts = pd.concat([summary_A, summary_B], ignore_index=True)[
+                ["Date", "Metric", "Total_Tails", "Embraer_Count", "CJ_Count"]
+            ]
 
             diag_rows = []
             for tail, ivls in sorted(intervals_by_tail.items()):
@@ -327,11 +409,12 @@ if not arr_raw.empty and not dep_raw.empty:
                         "Tail": tail,
                         "OnGround_Start_Local": s,
                         "OnGround_End_Local": e,
-                        "Hours": (e - s).total_seconds() / 3600.0
+                        "Hours": (e - s).total_seconds() / 3600.0,
+                        "Aircraft_Type": tail_type_map.get(tail, "")
                     })
             diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
 
-            return combined, diagnostics
+            return combined, diagnostics, summary_counts
 
         metrics = {apt: compute_airport_metrics(apt) for apt in airports}
 
@@ -340,10 +423,13 @@ if not arr_raw.empty and not dep_raw.empty:
         st.subheader("Results")
         tabs = st.tabs([f"{apt}" for apt in airports])
         for tab, apt in zip(tabs, airports):
-            combined, diagnostics = metrics[apt]
+            combined, diagnostics, summary_counts = metrics[apt]
             with tab:
                 st.markdown(f"### {apt}")
                 st.dataframe(combined, use_container_width=True)
+
+                st.subheader("Daily summary by aircraft category")
+                st.dataframe(summary_counts, use_container_width=True)
 
                 st.subheader("Diagnostics (on-ground intervals per tail)")
                 st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
@@ -353,7 +439,7 @@ if not arr_raw.empty and not dep_raw.empty:
                 with col_d1:
                     st.download_button(
                         "Download results (CSV)",
-                        data=combined.to_csv(index=False).encode("utf-8"),
+                        data=build_results_csv(combined, summary_counts),
                         file_name=f"{apt}_overnights_{int(year_int)}-{int(month_int):02d}_metrics.csv",
                         mime="text/csv"
                     )
