@@ -277,6 +277,25 @@ if not arr_raw.empty and not dep_raw.empty:
             end_month_start = LOCAL_TZ.localize(datetime(int(year_int), int(month_int) + 1, 1, 0, 0, 0))
         end_local = end_month_start - timedelta(seconds=1)
 
+        # We need to retain enough timeline past the month end so that
+        # checks that occur in the following morning (Metric A) or night
+        # windows that cross midnight (Metric B) still see the aircraft as
+        # present. Otherwise the last day of the month would always appear
+        # empty because the intervals get clipped at 23:59:59.
+        last_date = end_local.date()
+        check_dt_last = LOCAL_TZ.localize(
+            datetime(last_date.year, last_date.month, last_date.day, check_hour.hour, check_hour.minute)
+        ) + timedelta(days=1)
+        if night_end <= night_start:
+            last_window_end = LOCAL_TZ.localize(
+                datetime(last_date.year, last_date.month, last_date.day, night_end.hour, night_end.minute)
+            ) + timedelta(days=1)
+        else:
+            last_window_end = LOCAL_TZ.localize(
+                datetime(last_date.year, last_date.month, last_date.day, night_end.hour, night_end.minute)
+            )
+        clip_end = max(end_local, check_dt_last, last_window_end)
+
         def compute_airport_metrics(airport_code: str):
             arr_filtered = arr[arr["airport_dest"] == airport_code].copy()
             dep_filtered = dep[dep["airport_origin"] == airport_code].copy()
@@ -307,7 +326,7 @@ if not arr_raw.empty and not dep_raw.empty:
                         dep_t = dep_times[j]
                         j += 1
                     else:
-                        dep_t = end_local  # open through month end
+                        dep_t = clip_end  # open through extended month end buffer
                     own_intervals.append((arr_t, dep_t))
                 intervals_by_tail[tail] = own_intervals
 
@@ -323,10 +342,10 @@ if not arr_raw.empty and not dep_raw.empty:
             for tail, ivls in list(intervals_by_tail.items()):
                 clipped = []
                 for s, e in ivls:
-                    if e < start_local or s > end_local:
+                    if e < start_local or s > clip_end:
                         continue
                     s2 = max(s, start_local)
-                    e2 = min(e, end_local)
+                    e2 = min(e, clip_end)
                     if e2 > s2:
                         clipped.append((s2, e2))
                 intervals_by_tail[tail] = merge_intervals(clipped)
