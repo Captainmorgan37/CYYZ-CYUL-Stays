@@ -1,7 +1,9 @@
 # overnights_cyyz.py
 import calendar
 import io
+from collections import deque
 from datetime import datetime, timedelta, time
+
 import pandas as pd
 import pytz
 import streamlit as st
@@ -329,29 +331,45 @@ if not arr_raw.empty and not dep_raw.empty:
 
             arr_filtered = arr_filtered.sort_values(["tail", "arr_dt"])
             dep_filtered = dep_filtered.sort_values(["tail", "dep_dt"])
+
+            arr_map = {t: g["arr_dt"].tolist() for t, g in arr_filtered.groupby("tail")}
             dep_map = {t: g["dep_dt"].tolist() for t, g in dep_filtered.groupby("tail")}
 
             intervals_by_tail = {}
-            for tail, g in arr_filtered.groupby("tail"):
+            all_tails = sorted(set(arr_map) | set(dep_map))
+            for tail in all_tails:
+                arr_times = arr_map.get(tail, [])
                 dep_times = dep_map.get(tail, [])
-                j = 0
+                events = [
+                    (ts, 0) for ts in arr_times
+                ] + [
+                    (ts, 1) for ts in dep_times
+                ]
+                events.sort(key=lambda x: (x[0], x[1]))
+
+                queue = deque()
                 own_intervals = []
-                for arr_t in g["arr_dt"]:
-                    dep_t = None
-                    while j < len(dep_times) and dep_times[j] <= arr_t:
-                        j += 1
-                    if j < len(dep_times) and dep_times[j] > arr_t:
-                        dep_t = dep_times[j]
-                        j += 1
-                    else:
-                        dep_t = clip_end  # open through extended range end buffer
-                    own_intervals.append((arr_t, dep_t))
+                for ts, kind in events:
+                    if kind == 0:  # arrival
+                        queue.append(ts)
+                    else:  # departure
+                        if queue and queue[0] <= ts:
+                            arr_t = queue.popleft()
+                            if ts > arr_t:
+                                own_intervals.append((arr_t, ts))
+                        # if there's no matching arrival, skip the departure
+
+                while queue:
+                    arr_t = queue.popleft()
+                    if arr_t < clip_end:
+                        own_intervals.append((arr_t, clip_end))
+
                 intervals_by_tail[tail] = own_intervals
 
             if assume_from_range_start:
-                first_arrivals = {tail: g["arr_dt"].min() for tail, g in arr_filtered.groupby("tail")}
-                for tail, dep_times in dep_filtered.groupby("tail"):
-                    first_dep = dep_times["dep_dt"].min()
+                first_arrivals = {tail: min(times) if times else pd.NaT for tail, times in arr_map.items()}
+                for tail, dep_times in dep_map.items():
+                    first_dep = min(dep_times) if dep_times else pd.NaT
                     first_arr = first_arrivals.get(tail, pd.NaT)
                     if pd.notna(first_dep) and first_dep > start_local:
                         if pd.isna(first_arr) or first_arr > first_dep:
