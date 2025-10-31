@@ -1,4 +1,5 @@
 # overnights_cyyz.py
+import calendar
 import io
 from datetime import datetime, timedelta, time
 import pandas as pd
@@ -10,7 +11,7 @@ import streamlit as st
 # ===============================
 st.set_page_config(page_title="CYYZ Overnights Calculator", layout="wide")
 st.title("CYYZ Overnights Calculator")
-st.caption("Upload FL3XX arrivals/departures CSVs for a month and compute overnight counts by day (two metrics).")
+st.caption("Upload FL3XX arrivals/departures CSVs for a selected date range and compute overnight counts by day (two metrics).")
 
 # ===============================
 # Helpers
@@ -105,13 +106,19 @@ def classify_aircraft_type(type_code: str) -> str:
     return "other"
 
 
-def build_results_csv(combined: pd.DataFrame, summary_counts: pd.DataFrame) -> bytes:
+def build_results_csv(
+    combined: pd.DataFrame,
+    summary_counts: pd.DataFrame,
+    average_counts: pd.DataFrame,
+) -> bytes:
     """Create a CSV output with a clear summary section appended."""
     buffer = io.StringIO()
     buffer.write("# Detailed daily results\n")
     combined.to_csv(buffer, index=False)
     buffer.write("\n# Summary counts by aircraft category\n")
     summary_counts.to_csv(buffer, index=False)
+    buffer.write("\n# Average counts per day (by metric)\n")
+    average_counts.to_csv(buffer, index=False)
     return buffer.getvalue().encode("utf-8")
 
 
@@ -136,7 +143,7 @@ if not dep_raw.empty:
         st.dataframe(dep_raw.head(20), use_container_width=True)
 
 st.subheader("2) Settings")
-col_a, col_b, col_c = st.columns([1.2, 1, 1])
+col_a, col_b = st.columns([1.2, 1.2])
 with col_a:
     airport_input = st.text_input(
         "Airports (ICAO — comma separated)", value="CYYZ"
@@ -147,9 +154,22 @@ with col_a:
         if code and code not in airports:
             airports.append(code)
 with col_b:
-    month_int = st.number_input("Month (1–12)", min_value=1, max_value=12, value=8, step=1)
-with col_c:
-    year_int = st.number_input("Year", min_value=2000, max_value=2100, value=datetime.now().year, step=1)
+    today = datetime.now()
+    default_start = datetime(today.year, today.month, 1).date()
+    last_day = calendar.monthrange(today.year, today.month)[1]
+    default_end = datetime(today.year, today.month, last_day).date()
+    date_range = st.date_input(
+        "Reporting range (start and end dates, inclusive)",
+        value=(default_start, default_end),
+        help="Choose the start and end date to include in the analysis."
+    )
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_date, end_date = date_range
+    else:
+        start_date = end_date = date_range
+    if start_date > end_date:
+        st.warning("Start date is after end date. Swapping them for processing.")
+        start_date, end_date = end_date, start_date
 
 col_tz1, col_tz2 = st.columns(2)
 with col_tz1:
@@ -213,10 +233,10 @@ if not arr_raw.empty and not dep_raw.empty:
     threshold_hours = st.slider("Metric B — Minimum on-ground within night window (hours)", 0.0, 12.0, 5.0, 0.5)
 
     st.subheader("5) Pairing Options")
-    assume_from_month_start = st.checkbox(
-        "Assume a tail with departures but no earlier arrivals this month was already on-ground from month start",
+    assume_from_range_start = st.checkbox(
+        "Assume a tail with departures but no earlier arrivals in this range was already on-ground from range start",
         value=False,
-        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the month) as being present from the start of the month."
+        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the range) as being present from the start of the reporting range."
     )
 
     st.subheader("6) Run")
@@ -242,14 +262,16 @@ if not arr_raw.empty and not dep_raw.empty:
             arr["arr_dt"] = localize_naive(arr[arr_time_col], LOCAL_TZ)
             dep["dep_dt"] = localize_naive(dep[dep_time_col], LOCAL_TZ)
 
-        # Sanity check BEFORE month filter
+        # Sanity check BEFORE range filter
         all_parsed = pd.concat([arr["arr_dt"].dropna(), dep["dep_dt"].dropna()])
         if not all_parsed.empty:
-            month_hits = ((all_parsed.dt.year == int(year_int)) & (all_parsed.dt.month == int(month_int))).mean()
-            if month_hits < 0.2:
+            start_dt_check = LOCAL_TZ.localize(datetime.combine(start_date, time(0, 0, 0)))
+            end_dt_check = LOCAL_TZ.localize(datetime.combine(end_date, time(23, 59, 59)))
+            range_hits = ((all_parsed >= start_dt_check) & (all_parsed <= end_dt_check)).mean()
+            if range_hits < 0.2:
                 st.warning(
-                    "Heads up: Most parsed timestamps are NOT in the chosen month/year. "
-                    "This usually means the date format (day-first) toggle is wrong or the files use a different month."
+                    "Heads up: Most parsed timestamps are NOT in the chosen reporting range. "
+                    "This usually means the date format (day-first) toggle is wrong or the files cover different dates."
                 )
 
         # Normalize tail
@@ -269,19 +291,15 @@ if not arr_raw.empty and not dep_raw.empty:
         arr = arr.dropna(subset=["arr_dt"])
         dep = dep.dropna(subset=["dep_dt"])
 
-        # Month window (used for clipping/reporting, but we keep surrounding events for proper pairing)
-        start_local = LOCAL_TZ.localize(datetime(int(year_int), int(month_int), 1, 0, 0, 0))
-        if int(month_int) == 12:
-            end_month_start = LOCAL_TZ.localize(datetime(int(year_int) + 1, 1, 1, 0, 0, 0))
-        else:
-            end_month_start = LOCAL_TZ.localize(datetime(int(year_int), int(month_int) + 1, 1, 0, 0, 0))
-        end_local = end_month_start - timedelta(seconds=1)
+        # Reporting window (used for clipping/reporting, but we keep surrounding events for proper pairing)
+        start_local = LOCAL_TZ.localize(datetime.combine(start_date, time(0, 0, 0)))
+        end_local = LOCAL_TZ.localize(datetime.combine(end_date, time(23, 59, 59)))
 
-        # We need to retain enough timeline past the month end so that
+        # We need to retain enough timeline past the reporting range end so that
         # checks that occur in the following morning (Metric A) or night
         # windows that cross midnight (Metric B) still see the aircraft as
-        # present. Otherwise the last day of the month would always appear
-        # empty because the intervals get clipped at 23:59:59.
+        # present. Otherwise the last day of the reporting range would always
+        # appear empty because the intervals get clipped at 23:59:59.
         last_date = end_local.date()
         check_dt_last = LOCAL_TZ.localize(
             datetime(last_date.year, last_date.month, last_date.day, check_hour.hour, check_hour.minute)
@@ -326,11 +344,11 @@ if not arr_raw.empty and not dep_raw.empty:
                         dep_t = dep_times[j]
                         j += 1
                     else:
-                        dep_t = clip_end  # open through extended month end buffer
+                        dep_t = clip_end  # open through extended range end buffer
                     own_intervals.append((arr_t, dep_t))
                 intervals_by_tail[tail] = own_intervals
 
-            if assume_from_month_start:
+            if assume_from_range_start:
                 first_arrivals = {tail: g["arr_dt"].min() for tail, g in arr_filtered.groupby("tail")}
                 for tail, dep_times in dep_filtered.groupby("tail"):
                     first_dep = dep_times["dep_dt"].min()
@@ -417,6 +435,15 @@ if not arr_raw.empty and not dep_raw.empty:
                 ["Date", "Metric", "Total_Tails", "Embraer_Count", "CJ_Count"]
             ]
 
+            average_counts = summary_counts.groupby("Metric")[
+                ["Total_Tails", "Embraer_Count", "CJ_Count"]
+            ].mean().reset_index()
+            average_counts = average_counts.rename(columns={
+                "Total_Tails": "Avg_Total_Tails_per_Day",
+                "Embraer_Count": "Avg_Embraer_per_Day",
+                "CJ_Count": "Avg_CJ_per_Day",
+            })
+
             diag_rows = []
             for tail, ivls in sorted(intervals_by_tail.items()):
                 for s, e in ivls:
@@ -429,7 +456,7 @@ if not arr_raw.empty and not dep_raw.empty:
                     })
             diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
 
-            return combined, diagnostics, summary_counts
+            return combined, diagnostics, summary_counts, average_counts
 
         metrics = {apt: compute_airport_metrics(apt) for apt in airports}
 
@@ -438,13 +465,16 @@ if not arr_raw.empty and not dep_raw.empty:
         st.subheader("Results")
         tabs = st.tabs([f"{apt}" for apt in airports])
         for tab, apt in zip(tabs, airports):
-            combined, diagnostics, summary_counts = metrics[apt]
+            combined, diagnostics, summary_counts, average_counts = metrics[apt]
             with tab:
                 st.markdown(f"### {apt}")
                 st.dataframe(combined, use_container_width=True)
 
                 st.subheader("Daily summary by aircraft category")
                 st.dataframe(summary_counts, use_container_width=True)
+
+                st.subheader("Average aircraft counts per day (by metric)")
+                st.dataframe(average_counts, use_container_width=True)
 
                 st.subheader("Diagnostics (on-ground intervals per tail)")
                 st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
@@ -454,15 +484,15 @@ if not arr_raw.empty and not dep_raw.empty:
                 with col_d1:
                     st.download_button(
                         "Download results (CSV)",
-                        data=build_results_csv(combined, summary_counts),
-                        file_name=f"{apt}_overnights_{int(year_int)}-{int(month_int):02d}_metrics.csv",
+                        data=build_results_csv(combined, summary_counts, average_counts),
+                        file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
                         mime="text/csv"
                     )
                 with col_d2:
                     st.download_button(
                         "Download diagnostics (CSV)",
                         data=diagnostics.to_csv(index=False).encode("utf-8"),
-                        file_name=f"{apt}_overnight_intervals_{int(year_int)}-{int(month_int):02d}_diagnostics.csv",
+                        file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
                         mime="text/csv"
                     )
 
@@ -471,9 +501,9 @@ if not arr_raw.empty and not dep_raw.empty:
             f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
             f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
             f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
-            f"- Month-start assumption is **{'ON' if assume_from_month_start else 'OFF'}**.\n"
-            f"- Arrivals/departures just outside the month are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
-            f"- If results look empty for the first week, double-check the **day-first** toggle and that files are for the chosen month/year.\n"
+            f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
+            f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
+            f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
         )
 else:
     st.info("Upload both CSVs to configure column mapping and run the calculation.")
