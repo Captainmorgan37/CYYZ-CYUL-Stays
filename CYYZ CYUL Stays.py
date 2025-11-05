@@ -16,6 +16,14 @@ def load_prebuilt_movements():
     departures = pd.read_csv(os.path.join(base, "departures_all.csv"))
     return arrivals, departures
 
+def range_is_within_data(start_date, end_date, df):
+    """Check if the requested range is fully within the available dataset dates."""
+    if df.empty or "On-Block (Act)" not in df.columns:
+        return False
+    all_dates = pd.to_datetime(df["On-Block (Act)"], errors="coerce")
+    min_d, max_d = all_dates.min().date(), all_dates.max().date()
+    return (start_date >= min_d) and (end_date <= max_d)
+
 
 # ===============================
 # Page config & title
@@ -158,6 +166,20 @@ with col_u2:
 
 arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
 dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
+
+use_prebuilt = st.checkbox("Use built-in historical dataset (faster)", value=True)
+
+if use_prebuilt:
+    try:
+        arr_raw, dep_raw = load_prebuilt_movements()
+        data_source = "prebuilt"
+        st.success("Loaded built-in arrivals/departures (historical).")
+    except Exception as e:
+        data_source = "upload"
+        st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
+else:
+    data_source = "upload"
+
 
 if not arr_raw.empty:
     with st.expander("Preview: Arrivals (first 20 rows)"):
