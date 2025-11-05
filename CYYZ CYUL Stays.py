@@ -155,17 +155,18 @@ def build_results_csv(
 
 
 # ===============================
-# Inputs
+# Inputs (with built-in dataset support)
 # ===============================
-st.subheader("1) Upload CSVs")
-col_u1, col_u2 = st.columns(2)
-with col_u1:
-    f_arrivals = st.file_uploader("Arrivals CSV (TO CYYZ …)", type=["csv"], key="arr")
-with col_u2:
-    f_departures = st.file_uploader("Departures CSV (FROM CYYZ …)", type=["csv"], key="dep")
+st.subheader("1) Upload CSVs or Use Built-in Dataset")
 
-arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
-dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
+@st.cache_data(show_spinner=False)
+def load_prebuilt_movements():
+    """Load built-in historical movements (arrivals/departures)."""
+    import os
+    base = os.path.join(os.path.dirname(__file__), "data")
+    arr = pd.read_csv(os.path.join(base, "JAN2023-OCT2025 - TO.csv"))
+    dep = pd.read_csv(os.path.join(base, "JAN2023-OCT2025 - FROM.csv"))
+    return arr, dep
 
 use_prebuilt = st.checkbox("Use built-in historical dataset (faster)", value=True)
 
@@ -173,13 +174,21 @@ if use_prebuilt:
     try:
         arr_raw, dep_raw = load_prebuilt_movements()
         data_source = "prebuilt"
-        st.success("Loaded built-in arrivals/departures (historical).")
+        st.success("Loaded built-in arrivals/departures (2023–2025).")
     except Exception as e:
         data_source = "upload"
         st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
 else:
     data_source = "upload"
 
+if data_source == "upload":
+    col_u1, col_u2 = st.columns(2)
+    with col_u1:
+        f_arrivals = st.file_uploader("Arrivals CSV (TO CYYZ …)", type=["csv"], key="arr")
+    with col_u2:
+        f_departures = st.file_uploader("Departures CSV (FROM CYYZ …)", type=["csv"], key="dep")
+    arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
+    dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
 
 if not arr_raw.empty:
     with st.expander("Preview: Arrivals (first 20 rows)"):
@@ -187,6 +196,7 @@ if not arr_raw.empty:
 if not dep_raw.empty:
     with st.expander("Preview: Departures (first 20 rows)"):
         st.dataframe(dep_raw.head(20), use_container_width=True)
+
 
 st.subheader("2) Settings")
 col_a, col_b = st.columns([1.2, 1.2])
@@ -238,7 +248,34 @@ dayfirst_ui = st.checkbox("Parse dates as day-first (e.g., 01.08.2025 = 1 Aug 20
 st.caption("All calculations are performed in the selected **Local timezone** (default America/Toronto).")
 
 # Column mapping UI
-if not arr_raw.empty and not dep_raw.empty:
+data_available = (not arr_raw.empty) and (not dep_raw.empty)
+
+if data_available:
+    if data_source == "prebuilt":
+        # Auto-map known headers
+        arr_to_col, arr_time_col, arr_type_col, tail_arr = "To (ICAO)", "On-Block (Act)", "Aircraft Type", "Aircraft"
+        dep_from_col, dep_time_col, dep_type_col, tail_dep = "From (ICAO)", "Off-Block (Act)", "Aircraft Type", "Aircraft"
+        st.subheader("3) Column Mapping")
+        st.caption("Using built-in schema (no manual mapping required).")
+
+        # Coverage check
+        if ts_source_tz.startswith("UTC"):
+            arr_dt = parse_flexible_utc_to_local(arr_raw[arr_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
+            dep_dt = parse_flexible_utc_to_local(dep_raw[dep_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
+        else:
+            arr_dt = localize_naive(arr_raw[arr_time_col], LOCAL_TZ)
+            dep_dt = localize_naive(dep_raw[dep_time_col], LOCAL_TZ)
+
+        all_dt = pd.concat([arr_dt.dropna(), dep_dt.dropna()])
+        cov_start, cov_end = all_dt.min().date(), all_dt.max().date()
+        if start_date < cov_start or end_date > cov_end:
+            st.error(f"Selected range {start_date} → {end_date} is outside built-in coverage ({cov_start} → {cov_end}).")
+            st.stop()
+        else:
+            st.caption(f"Using built-in coverage: **{cov_start} → {cov_end}**")
+    else:
+        # your existing mapping UI continues here ↓↓↓
+
     st.subheader("3) Column Mapping")
     arr_cols = list(arr_raw.columns)
     dep_cols = list(dep_raw.columns)
@@ -577,7 +614,7 @@ else:
 # ===============================
 st.header("✈ Predictive Schedule (Experimental)")
 
-if not arr_raw.empty and not dep_raw.empty:
+if 'metrics' in locals() and metrics:
     st.subheader("Historical Pattern Forecast")
     st.caption("Based on historical overnight counts since the start of your selected range.")
 
