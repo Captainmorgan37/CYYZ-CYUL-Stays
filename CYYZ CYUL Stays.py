@@ -525,3 +525,71 @@ if not arr_raw.empty and not dep_raw.empty:
         )
 else:
     st.info("Upload both CSVs to configure column mapping and run the calculation.")
+
+
+
+# ===============================
+# Forecast Tab – Predictive Schedule
+# ===============================
+st.header("✈ Predictive Schedule (Experimental)")
+
+if not arr_raw.empty and not dep_raw.empty:
+    st.subheader("Historical Pattern Forecast")
+    st.caption("Based on historical overnight counts since 2024, predict expected stays for upcoming days.")
+
+    import numpy as np
+    from prophet import Prophet
+    import plotly.express as px
+
+    # Let the user choose forecast length
+    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30)
+
+    # Build historical daily counts from combined results
+    all_airports = airports or ["CYYZ"]
+    hist_rows = []
+    for apt in all_airports:
+        combined, _, _, _ = metrics.get(apt, (pd.DataFrame(), None, None, None))
+        if not combined.empty:
+            tmp = combined[["Date", "Overnights_A_check"]].copy()
+            tmp["Airport"] = apt
+            hist_rows.append(tmp)
+    hist_df = pd.concat(hist_rows, ignore_index=True)
+
+    if hist_df.empty:
+        st.info("Run the overnight calculation first to generate historical data.")
+    else:
+        # Prophet expects columns named 'ds' (date) and 'y' (value)
+        airport = st.selectbox("Select airport for forecast", all_airports)
+        df_airport = hist_df[hist_df["Airport"] == airport][["Date", "Overnights_A_check"]].rename(
+            columns={"Date": "ds", "Overnights_A_check": "y"}
+        )
+        df_airport = df_airport.groupby("ds").mean().reset_index()
+
+        model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+        model.fit(df_airport)
+        future = model.make_future_dataframe(periods=forecast_days)
+        forecast = model.predict(future)
+
+        fig = px.line(
+            forecast,
+            x="ds",
+            y=["yhat", "yhat_lower", "yhat_upper"],
+            labels={"ds": "Date", "value": "Predicted Overnights"},
+            title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Summary table
+        st.subheader("Forecast Summary")
+        st.dataframe(
+            forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
+            use_container_width=True
+        )
+
+        st.caption(
+            "Uses a Prophet model with automatic detection of weekly and seasonal patterns. "
+            "Values are mean ± 80% confidence interval."
+        )
+else:
+    st.info("Upload data and run calculations to enable the forecast feature.")
+
