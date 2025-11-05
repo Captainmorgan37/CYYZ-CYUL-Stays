@@ -8,6 +8,15 @@ import pandas as pd
 import pytz
 import streamlit as st
 
+@st.cache_data(show_spinner=False)
+def load_prebuilt_movements():
+    import os
+    base = os.path.join(os.path.dirname(__file__), "data")
+    arrivals = pd.read_csv(os.path.join(base, "arrivals_all.csv"))
+    departures = pd.read_csv(os.path.join(base, "departures_all.csv"))
+    return arrivals, departures
+
+
 # ===============================
 # Page config & title
 # ===============================
