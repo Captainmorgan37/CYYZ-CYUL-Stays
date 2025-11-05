@@ -694,60 +694,60 @@ st.markdown(
 
 
 
+# ===============================
+# Results Display
+# ===============================
 st.subheader("Results")
-        tabs = st.tabs([f"{apt}" for apt in airports])
-        for tab, apt in zip(tabs, airports):
-            combined, diagnostics, summary_counts, average_counts = metrics[apt]
-            with tab:
-                st.markdown(f"### {apt}")
-                st.dataframe(combined, use_container_width=True)
 
-                st.subheader("Daily summary by aircraft category")
-                st.dataframe(summary_counts, use_container_width=True)
+tabs = st.tabs([f"{apt}" for apt in airports])
+for tab, apt in zip(tabs, airports):
+    combined, diagnostics, summary_counts, average_counts = metrics[apt]
+    with tab:
+        st.markdown(f"### {apt}")
+        st.dataframe(combined, use_container_width=True)
 
-                st.subheader("Average aircraft counts per day (by metric)")
-                st.dataframe(average_counts, use_container_width=True)
+        st.subheader("Daily summary by aircraft category")
+        st.dataframe(summary_counts, use_container_width=True)
 
-                st.subheader("Diagnostics (on-ground intervals per tail)")
-                st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
-                st.dataframe(diagnostics, use_container_width=True, height=400)
+        st.subheader("Average aircraft counts per day (by metric)")
+        st.dataframe(average_counts, use_container_width=True)
 
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    st.download_button(
-                        "Download results (CSV)",
-                        data=build_results_csv(combined, summary_counts, average_counts),
-                        file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
-                        mime="text/csv"
-                    )
-                with col_d2:
-                    st.download_button(
-                        "Download diagnostics (CSV)",
-                        data=diagnostics.to_csv(index=False).encode("utf-8"),
-                        file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
-                        mime="text/csv"
-                    )
+        st.subheader("Diagnostics (on-ground intervals per tail)")
+        st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
+        st.dataframe(diagnostics, use_container_width=True, height=400)
 
-        st.markdown(
-            f"**Notes:**\n"
-            f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
-            f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
-            f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
-            f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
-            f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
-            f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
-        )
-else:
-    st.info("Upload both CSVs to configure column mapping and run the calculation.")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.download_button(
+                "Download results (CSV)",
+                data=build_results_csv(combined, summary_counts, average_counts),
+                file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
+                mime="text/csv",
+            )
+        with col_d2:
+            st.download_button(
+                "Download diagnostics (CSV)",
+                data=diagnostics.to_csv(index=False).encode("utf-8"),
+                file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
+                mime="text/csv",
+            )
 
-
+st.markdown(
+    f"**Notes:**\n"
+    f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
+    f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
+    f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
+    f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
+    f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
+    f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
+)
 
 # ===============================
 # Forecast Tab – Predictive Schedule
 # ===============================
 st.header("✈ Predictive Schedule (Experimental)")
 
-if 'metrics' in locals() and metrics:
+if "metrics" in locals() and metrics:
     st.subheader("Historical Pattern Forecast")
     st.caption("Based on historical overnight counts since the start of your selected range.")
 
@@ -789,7 +789,7 @@ if 'metrics' in locals() and metrics:
             x="ds",
             y=["yhat", "yhat_lower", "yhat_upper"],
             labels={"ds": "Date", "value": "Predicted Overnights"},
-            title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)"
+            title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)",
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -797,7 +797,7 @@ if 'metrics' in locals() and metrics:
         st.subheader("Forecast Summary")
         st.dataframe(
             forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
-            use_container_width=True
+            use_container_width=True,
         )
 
         st.caption(
@@ -805,5 +805,7 @@ if 'metrics' in locals() and metrics:
             "Values are mean ± 80% confidence interval."
         )
 else:
+    st.info("Upload data and run calculations to enable the forecast feature.")
+
     st.info("Upload data and run calculations to enable the forecast feature.")
 
