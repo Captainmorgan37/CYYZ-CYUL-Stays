@@ -190,13 +190,17 @@ if use_prebuilt:
             "Off-Block (Act)": "Departure_Time",
             "From (ICAO)": "From (ICAO)"
         }
-
         arr_raw.rename(columns=rename_map_arr, inplace=True)
         dep_raw.rename(columns=rename_map_dep, inplace=True)
+
+        # --- Set the expected column variables for later steps ---
+        arr_to_col, arr_time_col, arr_type_col, tail_arr = "To (ICAO)", "Arrival_Time", "Aircraft Type", "Tail"
+        dep_from_col, dep_time_col, dep_type_col, tail_dep = "From (ICAO)", "Departure_Time", "Aircraft Type", "Tail"
 
     except Exception as e:
         data_source = "upload"
         st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
+
 
     except Exception as e:
         data_source = "upload"
