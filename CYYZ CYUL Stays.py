@@ -8,13 +8,6 @@ import pandas as pd
 import pytz
 import streamlit as st
 
-@st.cache_data(show_spinner=False)
-def load_prebuilt_movements():
-    import os
-    base = os.path.join(os.path.dirname(__file__), "data")
-    arrivals = pd.read_csv(os.path.join(base, "arrivals_all.csv"))
-    departures = pd.read_csv(os.path.join(base, "departures_all.csv"))
-    return arrivals, departures
 
 
 # ===============================
@@ -24,9 +17,30 @@ st.set_page_config(page_title="CYYZ Overnights Calculator", layout="wide")
 st.title("CYYZ Overnights Calculator")
 st.caption("Upload FL3XX arrivals/departures CSVs for a selected date range and compute overnight counts by day (two metrics).")
 
+use_prebuilt = st.checkbox("Use prebuilt historical data (faster startup)", value=True)
+if use_prebuilt:
+    arr_raw, dep_raw = load_prebuilt_movements()
+    st.success("Loaded prebuilt arrivals/departures from 2023–2025.")
+else:
+    # fall back to upload logic
+    f_arrivals = st.file_uploader("Arrivals CSV", type=["csv"], key="arr")
+    f_departures = st.file_uploader("Departures CSV", type=["csv"], key="dep")
+    arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
+    dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
+
+
 # ===============================
 # Helpers
 # ===============================
+@st.cache_data(show_spinner=False)
+def load_prebuilt_movements():
+    import os
+    base = os.path.join(os.path.dirname(__file__), "data")
+    arrivals = pd.read_csv(os.path.join(base, "arrivals_all.csv"))
+    departures = pd.read_csv(os.path.join(base, "departures_all.csv"))
+    return arrivals, departures
+
+
 @st.cache_data(show_spinner=False)
 def flexible_read_csv(file) -> pd.DataFrame:
     """Try common delimiters; fall back to default."""
