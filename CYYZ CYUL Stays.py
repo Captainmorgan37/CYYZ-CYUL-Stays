@@ -164,9 +164,10 @@ def load_prebuilt_movements():
     """Load built-in historical movements (arrivals/departures)."""
     import os
     base = os.path.join(os.path.dirname(__file__), "data")
-    arr = pd.read_csv(os.path.join(base, "JAN2023-OCT2025 - TO.csv"))
-    dep = pd.read_csv(os.path.join(base, "JAN2023-OCT2025 - FROM.csv"))
+    arr = pd.read_csv(os.path.join(base, "arrivals_all.csv"))
+    dep = pd.read_csv(os.path.join(base, "departures_all.csv"))
     return arr, dep
+
 
 use_prebuilt = st.checkbox("Use built-in historical dataset (faster)", value=True)
 
