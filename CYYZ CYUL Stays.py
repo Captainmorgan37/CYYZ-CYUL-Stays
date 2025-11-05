@@ -535,7 +535,7 @@ st.header("✈ Predictive Schedule (Experimental)")
 
 if not arr_raw.empty and not dep_raw.empty:
     st.subheader("Historical Pattern Forecast")
-    st.caption("Based on historical overnight counts since 2024, predict expected stays for upcoming days.")
+    st.caption("Based on historical overnight counts since the start of your selected range.")
 
     import numpy as np
     from prophet import Prophet
