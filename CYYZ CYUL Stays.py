@@ -586,7 +586,7 @@ if data_available:
                     })
 
             # --- Patch for prebuilt data compatibility ---
-diag_df = pd.DataFrame(diag_rows)
+            diag_df = pd.DataFrame(diag_rows)
 
             # Auto-fix for missing standardized columns
             if "Aircraft" in diag_df.columns and "Tail" not in diag_df.columns:
