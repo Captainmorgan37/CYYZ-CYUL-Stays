@@ -622,16 +622,15 @@ if data_available:
                 diag_df.rename(columns={"OnGroundStartLocal": "OnGround_Start_Local"}, inplace=True)
             if "OnGroundStart" in diag_df.columns and "OnGround_Start_Local" not in diag_df.columns:
                 diag_df.rename(columns={"OnGroundStart": "OnGround_Start_Local"}, inplace=True)
-            
-            diagnostics = diag_df.sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
 
-            diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
+            # Safeguard against missing columns or empty DataFrame
+            sort_cols = [c for c in ["Tail", "OnGround_Start_Local"] if c in diag_df.columns]
+            if sort_cols and not diag_df.empty:
+                diagnostics = diag_df.sort_values(sort_cols).reset_index(drop=True)
+            else:
+                diagnostics = diag_df.copy()  # empty or minimal DataFrame
 
             return combined, diagnostics, summary_counts, average_counts
-
-        metrics = {apt: compute_airport_metrics(apt) for apt in airports}
-
-        st.success(f"Computed for {', '.join(airports)}!")
 
         st.subheader("Results")
         tabs = st.tabs([f"{apt}" for apt in airports])
