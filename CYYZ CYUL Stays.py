@@ -269,43 +269,71 @@ if data_available:
         all_dt = pd.concat([arr_dt.dropna(), dep_dt.dropna()])
         cov_start, cov_end = all_dt.min().date(), all_dt.max().date()
         if start_date < cov_start or end_date > cov_end:
-            st.error(f"Selected range {start_date} → {end_date} is outside built-in coverage ({cov_start} → {cov_end}).")
+            st.error(
+                f"Selected range {start_date} → {end_date} is outside built-in coverage "
+                f"({cov_start} → {cov_end})."
+            )
             st.stop()
         else:
             st.caption(f"Using built-in coverage: **{cov_start} → {cov_end}**")
+
     else:
-        # your existing mapping UI continues here ↓↓↓
+        # --- Existing mapping UI for uploaded CSVs ---
+        st.subheader("3) Column Mapping")
+        arr_cols = list(arr_raw.columns)
+        dep_cols = list(dep_raw.columns)
 
-    st.subheader("3) Column Mapping")
-    arr_cols = list(arr_raw.columns)
-    dep_cols = list(dep_raw.columns)
+        # Sensible defaults (prefer Actual)
+        default_arr_tail = pick_col(arr_cols, ["Aircraft", "Tail", "Registration", "A/C"])
+        default_dep_tail = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
+        default_to = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
+        default_from = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
+        default_arr_time = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
+        default_dep_time = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
+        default_arr_type = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
+        default_dep_type = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
 
-    # Sensible defaults (prefer Actual)
-    default_arr_tail = pick_col(arr_cols, ["Aircraft", "Tail", "Registration", "A/C"])
-    default_dep_tail = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
-    default_to = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
-    default_from = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
-    default_arr_time = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
-    default_dep_time = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
-    default_arr_type = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
-    default_dep_type = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
+        c1, c2 = st.columns(2)
+        with c1:
+            tail_arr = st.selectbox(
+                "Arrivals: Tail/Registration",
+                arr_cols,
+                index=arr_cols.index(default_arr_tail) if default_arr_tail in arr_cols else 0,
+            )
+            arr_to_col = st.selectbox(
+                "Arrivals: To (ICAO)",
+                arr_cols,
+                index=arr_cols.index(default_to) if default_to in arr_cols else 0,
+            )
+            arr_time_col = st.selectbox(
+                "Arrivals: Arrival time",
+                arr_cols,
+                index=arr_cols.index(default_arr_time) if default_arr_time in arr_cols else 0,
+            )
+            arr_type_options = ["<None>"] + arr_cols
+            arr_type_idx = arr_type_options.index(default_arr_type) if default_arr_type in arr_cols else 0
+            arr_type_col = st.selectbox("Arrivals: Aircraft type (optional)", arr_type_options, index=arr_type_idx)
+        with c2:
+            tail_dep = st.selectbox(
+                "Departures: Tail/Registration",
+                dep_cols,
+                index=dep_cols.index(default_dep_tail) if default_dep_tail in dep_cols else 0,
+            )
+            dep_from_col = st.selectbox(
+                "Departures: From (ICAO)",
+                dep_cols,
+                index=dep_cols.index(default_from) if default_from in dep_cols else 0,
+            )
+            dep_time_col = st.selectbox(
+                "Departures: Departure time",
+                dep_cols,
+                index=dep_cols.index(default_dep_time) if default_dep_time in dep_cols else 0,
+            )
+            dep_type_options = ["<None>"] + dep_cols
+            dep_type_idx = dep_type_options.index(default_dep_type) if default_dep_type in dep_cols else 0
+            dep_type_col = st.selectbox("Departures: Aircraft type (optional)", dep_type_options, index=dep_type_idx)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        tail_arr = st.selectbox("Arrivals: Tail/Registration", arr_cols, index=arr_cols.index(default_arr_tail) if default_arr_tail in arr_cols else 0)
-        arr_to_col = st.selectbox("Arrivals: To (ICAO)", arr_cols, index=arr_cols.index(default_to) if default_to in arr_cols else 0)
-        arr_time_col = st.selectbox("Arrivals: Arrival time", arr_cols, index=arr_cols.index(default_arr_time) if default_arr_time in arr_cols else 0)
-        arr_type_options = ["<None>"] + arr_cols
-        arr_type_idx = arr_type_options.index(default_arr_type) if default_arr_type in arr_cols else 0
-        arr_type_col = st.selectbox("Arrivals: Aircraft type (optional)", arr_type_options, index=arr_type_idx)
-    with c2:
-        tail_dep = st.selectbox("Departures: Tail/Registration", dep_cols, index=dep_cols.index(default_dep_tail) if default_dep_tail in dep_cols else 0)
-        dep_from_col = st.selectbox("Departures: From (ICAO)", dep_cols, index=dep_cols.index(default_from) if default_from in dep_cols else 0)
-        dep_time_col = st.selectbox("Departures: Departure time", dep_cols, index=dep_cols.index(default_dep_time) if default_dep_time in dep_cols else 0)
-        dep_type_options = ["<None>"] + dep_cols
-        dep_type_idx = dep_type_options.index(default_dep_type) if default_dep_type in dep_cols else 0
-        dep_type_col = st.selectbox("Departures: Aircraft type (optional)", dep_type_options, index=dep_type_idx)
-
+    # --- Shared logic below (runs for both prebuilt and uploaded datasets) ---
     st.subheader("4) Overnight Definitions")
     col_m1, col_m2 = st.columns(2)
     with col_m1:
@@ -313,13 +341,15 @@ if data_available:
     with col_m2:
         night_start = st.time_input("Metric B — Night window start (local)", value=time(20, 0))
         night_end = st.time_input("Metric B — Night window end (local, next day)", value=time(6, 0))
-    threshold_hours = st.slider("Metric B — Minimum on-ground within night window (hours)", 0.0, 12.0, 5.0, 0.5)
+    threshold_hours = st.slider(
+        "Metric B — Minimum on-ground within night window (hours)", 0.0, 12.0, 5.0, 0.5
+    )
 
     st.subheader("5) Pairing Options")
     assume_from_range_start = st.checkbox(
         "Assume a tail with departures but no earlier arrivals in this range was already on-ground from range start",
         value=False,
-        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the range) as being present from the start of the reporting range."
+        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the range) as being present from the start of the reporting range.",
     )
 
     st.subheader("6) Run")
