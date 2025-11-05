@@ -176,6 +176,28 @@ if use_prebuilt:
         arr_raw, dep_raw = load_prebuilt_movements()
         data_source = "prebuilt"
         st.success("Loaded built-in arrivals/departures (2023–2025).")
+
+        # --- Auto-standardize column names for internal compatibility ---
+        rename_map_arr = {
+            "Aircraft": "Tail",
+            "Aircraft Type": "Aircraft Type",
+            "On-Block (Act)": "Arrival_Time",
+            "To (ICAO)": "To (ICAO)"
+        }
+        rename_map_dep = {
+            "Aircraft": "Tail",
+            "Aircraft Type": "Aircraft Type",
+            "Off-Block (Act)": "Departure_Time",
+            "From (ICAO)": "From (ICAO)"
+        }
+
+        arr_raw.rename(columns=rename_map_arr, inplace=True)
+        dep_raw.rename(columns=rename_map_dep, inplace=True)
+
+    except Exception as e:
+        data_source = "upload"
+        st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
+
     except Exception as e:
         data_source = "upload"
         st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
