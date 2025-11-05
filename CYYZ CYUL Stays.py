@@ -201,10 +201,6 @@ if use_prebuilt:
         data_source = "upload"
         st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
 
-
-    except Exception as e:
-        data_source = "upload"
-        st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
 else:
     data_source = "upload"
 
@@ -630,21 +626,72 @@ if data_available:
             else:
                 diagnostics = diag_df.copy()  # empty or minimal DataFrame
 
-            return combined, diagnostics, summary_counts, average_counts
+        return combined, diagnostics, summary_counts, average_counts
 
-                # --- Ensure metrics dictionary exists ---
+
+# =========================================================
+# After function definition – main app results section
+# =========================================================
+
+# Ensure metrics dictionary exists and compute if needed
 if "metrics" not in locals():
-                metrics = {}
-    
-            # --- Compute metrics if not already defined ---
+    metrics = {}
+
 if not metrics and airports:
-                with st.spinner("Computing metrics..."):
-                    metrics = {apt: compute_airport_metrics(apt) for apt in airports}
-    
-            # --- Safety check ---
+    with st.spinner("Computing metrics..."):
+        metrics = {apt: compute_airport_metrics(apt) for apt in airports}
+
 if not metrics:
-                st.error("No metrics computed — please check your date range and input data.")
-                st.stop()
+    st.error("No metrics computed — please check your date range and input data.")
+    st.stop()
+
+# ===============================
+# Results Display
+# ===============================
+st.subheader("Results")
+tabs = st.tabs([f"{apt}" for apt in airports])
+for tab, apt in zip(tabs, airports):
+    combined, diagnostics, summary_counts, average_counts = metrics[apt]
+    with tab:
+        st.markdown(f"### {apt}")
+        st.dataframe(combined, use_container_width=True)
+
+        st.subheader("Daily summary by aircraft category")
+        st.dataframe(summary_counts, use_container_width=True)
+
+        st.subheader("Average aircraft counts per day (by metric)")
+        st.dataframe(average_counts, use_container_width=True)
+
+        st.subheader("Diagnostics (on-ground intervals per tail)")
+        st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
+        st.dataframe(diagnostics, use_container_width=True, height=400)
+
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.download_button(
+                "Download results (CSV)",
+                data=build_results_csv(combined, summary_counts, average_counts),
+                file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
+                mime="text/csv",
+            )
+        with col_d2:
+            st.download_button(
+                "Download diagnostics (CSV)",
+                data=diagnostics.to_csv(index=False).encode("utf-8"),
+                file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
+                mime="text/csv",
+            )
+
+st.markdown(
+    f"**Notes:**\n"
+    f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
+    f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
+    f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
+    f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
+    f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
+    f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
+)
+
 
 
 st.subheader("Results")
