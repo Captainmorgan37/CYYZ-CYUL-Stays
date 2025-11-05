@@ -584,6 +584,20 @@ if data_available:
                         "Hours": (e - s).total_seconds() / 3600.0,
                         "Aircraft_Type": tail_type_map.get(tail, "")
                     })
+
+            # --- Patch for prebuilt data compatibility ---
+diag_df = pd.DataFrame(diag_rows)
+
+            # Auto-fix for missing standardized columns
+            if "Aircraft" in diag_df.columns and "Tail" not in diag_df.columns:
+                diag_df.rename(columns={"Aircraft": "Tail"}, inplace=True)
+            if "OnGroundStartLocal" in diag_df.columns and "OnGround_Start_Local" not in diag_df.columns:
+                diag_df.rename(columns={"OnGroundStartLocal": "OnGround_Start_Local"}, inplace=True)
+            if "OnGroundStart" in diag_df.columns and "OnGround_Start_Local" not in diag_df.columns:
+                diag_df.rename(columns={"OnGroundStart": "OnGround_Start_Local"}, inplace=True)
+            
+            diagnostics = diag_df.sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
+
             diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
 
             return combined, diagnostics, summary_counts, average_counts
