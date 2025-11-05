@@ -280,8 +280,9 @@ data_available = (not arr_raw.empty) and (not dep_raw.empty)
 if data_available:
     if data_source == "prebuilt":
         # Auto-map known headers
-        arr_to_col, arr_time_col, arr_type_col, tail_arr = "To (ICAO)", "On-Block (Act)", "Aircraft Type", "Aircraft"
-        dep_from_col, dep_time_col, dep_type_col, tail_dep = "From (ICAO)", "Off-Block (Act)", "Aircraft Type", "Aircraft"
+        arr_to_col, arr_time_col, arr_type_col, tail_arr = "To (ICAO)", "Arrival_Time", "Aircraft Type", "Tail"
+        dep_from_col, dep_time_col, dep_type_col, tail_dep = "From (ICAO)", "Departure_Time", "Aircraft Type", "Tail"
+
         st.subheader("3) Column Mapping")
         st.caption("Using built-in schema (no manual mapping required).")
 
