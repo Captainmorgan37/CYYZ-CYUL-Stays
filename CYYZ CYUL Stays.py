@@ -632,6 +632,21 @@ if data_available:
 
             return combined, diagnostics, summary_counts, average_counts
 
+                # --- Ensure metrics dictionary exists ---
+            if "metrics" not in locals():
+                metrics = {}
+    
+            # --- Compute metrics if not already defined ---
+            if not metrics and airports:
+                with st.spinner("Computing metrics..."):
+                    metrics = {apt: compute_airport_metrics(apt) for apt in airports}
+    
+            # --- Safety check ---
+            if not metrics:
+                st.error("No metrics computed — please check your date range and input data.")
+                st.stop()
+
+
         st.subheader("Results")
         tabs = st.tabs([f"{apt}" for apt in airports])
         for tab, apt in zip(tabs, airports):
