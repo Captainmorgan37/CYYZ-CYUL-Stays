@@ -194,8 +194,19 @@ if use_prebuilt:
         dep_raw.rename(columns=rename_map_dep, inplace=True)
 
         # --- Set the expected column variables for later steps ---
-        arr_to_col, arr_time_col, arr_type_col, tail_arr = "To (ICAO)", "Arrival_Time", "Aircraft Type", "Tail"
-        dep_from_col, dep_time_col, dep_type_col, tail_dep = "From (ICAO)", "Departure_Time", "Aircraft Type", "Tail"
+        arr_time_col = (
+            arr_map.get("on_block_actual")
+            or arr_map.get("onblock")
+            or arr_map.get("on-block (act)")
+            or arr_map.get("on-block")
+        )
+        dep_time_col = (
+            dep_map.get("off_block_actual")
+            or dep_map.get("offblock")
+            or dep_map.get("off-block (act)")
+            or dep_map.get("off-block")
+        )
+
 
     except Exception as e:
         data_source = "upload"
