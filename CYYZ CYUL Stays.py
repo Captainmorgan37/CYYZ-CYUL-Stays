@@ -547,9 +547,24 @@ if not arr_raw.empty and not dep_raw.empty:
 
             return combined, diagnostics, summary_counts, average_counts
 
-        metrics = {apt: compute_airport_metrics(apt) for apt in airports}
-
-        st.success(f"Computed for {', '.join(airports)}!")
+        # --- Cache computed metrics in session_state ---
+        if "metrics" not in st.session_state:
+            st.session_state["metrics"] = {}
+        
+        metrics = st.session_state["metrics"]
+        
+        if st.button("Compute Overnights"):
+            if not airports:
+                st.error("Enter at least one airport code (e.g., CYYZ, CYUL).")
+                st.stop()
+        
+            # Compute new results and store them persistently
+            with st.spinner("Computing overnights..."):
+                new_metrics = {apt: compute_airport_metrics(apt) for apt in airports}
+                st.session_state["metrics"].update(new_metrics)
+                metrics = st.session_state["metrics"]
+        
+            st.success(f"Computed for {', '.join(airports)}!")
 
         st.subheader("Results")
         tabs = st.tabs([f"{apt}" for apt in airports])
