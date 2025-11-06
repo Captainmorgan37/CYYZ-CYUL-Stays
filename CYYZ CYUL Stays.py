@@ -1,6 +1,7 @@
 # overnights_cyyz.py
 import calendar
 import io
+import hashlib
 from collections import deque
 from datetime import datetime, timedelta, time
 
@@ -14,6 +15,8 @@ import streamlit as st
 st.set_page_config(page_title="CYYZ Overnights Calculator", layout="wide")
 st.title("CYYZ Overnights Calculator")
 st.caption("Upload FL3XX arrivals/departures CSVs for a selected date range and compute overnight counts by day (two metrics).")
+
+st.session_state.setdefault("overnights_results", None)
 
 # ===============================
 # Helpers
@@ -94,6 +97,15 @@ def overlap(a_start, a_end, b_start, b_end):
 
 EMBRAER_PREFIXES = ("E54", "E55")
 CJ_PREFIXES = ("C25",)
+
+
+def df_signature(df: pd.DataFrame) -> str:
+    """Return a lightweight hash representing the dataframe contents."""
+    if df is None or df.empty:
+        return "empty"
+    normalized = df.astype(str)
+    hashed = pd.util.hash_pandas_object(normalized, index=True).values.tobytes()
+    return hashlib.md5(hashed).hexdigest()
 
 
 def classify_aircraft_type(type_code: str) -> str:
@@ -242,7 +254,38 @@ if not arr_raw.empty and not dep_raw.empty:
     )
 
     st.subheader("6) Run")
-    if st.button("Compute Overnights"):
+
+    current_signature = (
+        tuple(airports),
+        start_date,
+        end_date,
+        ts_source_tz,
+        local_tz_name,
+        dayfirst_ui,
+        tail_arr,
+        arr_to_col,
+        arr_time_col,
+        arr_type_col,
+        tail_dep,
+        dep_from_col,
+        dep_time_col,
+        dep_type_col,
+        check_hour.isoformat(),
+        night_start.isoformat(),
+        night_end.isoformat(),
+        float(threshold_hours),
+        assume_from_range_start,
+        df_signature(arr_raw),
+        df_signature(dep_raw),
+    )
+
+    stored_results = st.session_state.get("overnights_results")
+    if stored_results and stored_results.get("signature") != current_signature:
+        st.session_state["overnights_results"] = None
+        stored_results = None
+
+    run_compute = st.button("Compute Overnights")
+    if run_compute:
         if not airports:
             st.error("Enter at least one airport code (e.g., CYYZ, CYUL).")
             st.stop()
@@ -478,12 +521,26 @@ if not arr_raw.empty and not dep_raw.empty:
 
         metrics = {apt: compute_airport_metrics(apt) for apt in airports}
 
-        st.success(f"Computed for {', '.join(airports)}!")
+        result_payload = {
+            "metrics": metrics,
+            "airports": airports,
+            "signature": current_signature,
+        }
+        st.session_state["overnights_results"] = result_payload
+        stored_results = result_payload
+
+    if stored_results:
+        airports_cached = stored_results["airports"]
+        metrics_cached = stored_results["metrics"]
+        if run_compute:
+            st.success(f"Computed for {', '.join(airports_cached)}!")
+        else:
+            st.success(f"Using cached results for {', '.join(airports_cached)}.")
 
         st.subheader("Results")
-        tabs = st.tabs([f"{apt}" for apt in airports])
-        for tab, apt in zip(tabs, airports):
-            combined, diagnostics, summary_counts, average_counts = metrics[apt]
+        tabs = st.tabs([f"{apt}" for apt in airports_cached])
+        for tab, apt in zip(tabs, airports_cached):
+            combined, diagnostics, summary_counts, average_counts = metrics_cached[apt]
             with tab:
                 st.markdown(f"### {apt}")
                 st.dataframe(combined, use_container_width=True)
@@ -527,6 +584,11 @@ else:
     st.info("Upload both CSVs to configure column mapping and run the calculation.")
 
 
+results_state = st.session_state.get("overnights_results")
+cached_metrics = results_state["metrics"] if results_state else {}
+cached_airports = results_state["airports"] if results_state else []
+
+
 
 # ===============================
 # Forecast Tab – Predictive Schedule
@@ -545,10 +607,10 @@ if not arr_raw.empty and not dep_raw.empty:
     forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30)
 
     # Build historical daily counts from combined results
-    all_airports = airports or ["CYYZ"]
+    all_airports = cached_airports or airports or ["CYYZ"]
     hist_rows = []
     for apt in all_airports:
-        combined, _, _, _ = metrics.get(apt, (pd.DataFrame(), None, None, None))
+        combined, _, _, _ = cached_metrics.get(apt, (pd.DataFrame(), None, None, None))
         if not combined.empty:
             tmp = combined[["Date", "Overnights_A_check"]].copy()
             tmp["Airport"] = apt
