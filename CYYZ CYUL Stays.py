@@ -645,54 +645,21 @@ if not metrics:
     st.error("No metrics computed — please check your date range and input data.")
     st.stop()
 
-# ===============================
-# Results Display
-# ===============================
-st.subheader("Results")
-tabs = st.tabs([f"{apt}" for apt in airports])
-for tab, apt in zip(tabs, airports):
-    combined, diagnostics, summary_counts, average_counts = metrics[apt]
-    with tab:
-        st.markdown(f"### {apt}")
-        st.dataframe(combined, use_container_width=True)
+# =========================================================
+# After function definition – main app results section
+# =========================================================
 
-        st.subheader("Daily summary by aircraft category")
-        st.dataframe(summary_counts, use_container_width=True)
+# Ensure metrics dictionary exists and compute if needed
+if "metrics" not in locals():
+    metrics = {}
 
-        st.subheader("Average aircraft counts per day (by metric)")
-        st.dataframe(average_counts, use_container_width=True)
+if not metrics and airports:
+    with st.spinner("Computing metrics..."):
+        metrics = {apt: compute_airport_metrics(apt) for apt in airports}
 
-        st.subheader("Diagnostics (on-ground intervals per tail)")
-        st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
-        st.dataframe(diagnostics, use_container_width=True, height=400)
-
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            st.download_button(
-                "Download results (CSV)",
-                data=build_results_csv(combined, summary_counts, average_counts),
-                file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
-                mime="text/csv",
-            )
-        with col_d2:
-            st.download_button(
-                "Download diagnostics (CSV)",
-                data=diagnostics.to_csv(index=False).encode("utf-8"),
-                file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
-                mime="text/csv",
-            )
-
-st.markdown(
-    f"**Notes:**\n"
-    f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
-    f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
-    f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
-    f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
-    f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
-    f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
-)
-
-
+if not metrics:
+    st.error("No metrics computed — please check your date range and input data.")
+    st.stop()
 
 # ===============================
 # Results Display
@@ -755,10 +722,8 @@ if "metrics" in locals() and metrics:
     from prophet import Prophet
     import plotly.express as px
 
-    # Let the user choose forecast length
     forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30)
 
-    # Build historical daily counts from combined results
     all_airports = airports or ["CYYZ"]
     hist_rows = []
     for apt in all_airports:
@@ -767,12 +732,11 @@ if "metrics" in locals() and metrics:
             tmp = combined[["Date", "Overnights_A_check"]].copy()
             tmp["Airport"] = apt
             hist_rows.append(tmp)
-    hist_df = pd.concat(hist_rows, ignore_index=True)
 
-    if hist_df.empty:
+    if not hist_rows:
         st.info("Run the overnight calculation first to generate historical data.")
     else:
-        # Prophet expects columns named 'ds' (date) and 'y' (value)
+        hist_df = pd.concat(hist_rows, ignore_index=True)
         airport = st.selectbox("Select airport for forecast", all_airports)
         df_airport = hist_df[hist_df["Airport"] == airport][["Date", "Overnights_A_check"]].rename(
             columns={"Date": "ds", "Overnights_A_check": "y"}
@@ -784,6 +748,7 @@ if "metrics" in locals() and metrics:
         future = model.make_future_dataframe(periods=forecast_days)
         forecast = model.predict(future)
 
+        import plotly.express as px
         fig = px.line(
             forecast,
             x="ds",
@@ -793,7 +758,6 @@ if "metrics" in locals() and metrics:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # Summary table
         st.subheader("Forecast Summary")
         st.dataframe(
             forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
@@ -806,6 +770,3 @@ if "metrics" in locals() and metrics:
         )
 else:
     st.info("Upload data and run calculations to enable the forecast feature.")
-
-    st.info("Upload data and run calculations to enable the forecast feature.")
-
