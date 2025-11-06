@@ -626,7 +626,7 @@ if data_available:
             else:
                 diagnostics = diag_df.copy()  # empty or minimal DataFrame
 
-        return combined, diagnostics, summary_counts, average_counts
+                return combined, diagnostics, summary_counts, average_counts
 
 
 # =========================================================
