@@ -592,3 +592,116 @@ if not arr_raw.empty and not dep_raw.empty:
         )
 else:
     st.info("Upload data and run calculations to enable the forecast feature.")
+
+
+# ===============================
+# Forecast Tab – Predictive Movements (Arrivals & Departures)
+# ===============================
+st.header("📈 Predictive Movements (Arrivals & Departures)")
+
+if not arr_raw.empty and not dep_raw.empty:
+    st.subheader("Daily Movement Forecast")
+    st.caption("Predict expected arrivals and departures based on historical daily counts.")
+
+    import numpy as np
+    from prophet import Prophet
+    import plotly.graph_objects as go
+
+    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30, key="mov_forecast_days")
+
+    # --- Build daily counts ---
+    arr = arr_raw.copy()
+    dep = dep_raw.copy()
+
+    # Determine column names dynamically (works for uploads or built-in schema)
+    arr_time_col = pick_col(arr.columns, ["On-Block (Act)", "Arrival_Time", "On Block", "OnBlock"])
+    dep_time_col = pick_col(dep.columns, ["Off-Block (Act)", "Departure_Time", "Off Block", "OffBlock"])
+    arr_apt_col = pick_col(arr.columns, ["To (ICAO)", "Destination", "To"])
+    dep_apt_col = pick_col(dep.columns, ["From (ICAO)", "Origin", "From"])
+
+    arr["date"] = pd.to_datetime(arr[arr_time_col], errors="coerce", dayfirst=dayfirst_ui).dt.date
+    dep["date"] = pd.to_datetime(dep[dep_time_col], errors="coerce", dayfirst=dayfirst_ui).dt.date
+    arr[arr_apt_col] = arr[arr_apt_col].astype(str).str.upper().str.strip()
+    dep[dep_apt_col] = dep[dep_apt_col].astype(str).str.upper().str.strip()
+
+    # Count arrivals and departures per airport per day
+    arrivals_daily = arr.groupby(["date", arr_apt_col]).size().reset_index(name="Arrivals")
+    departures_daily = dep.groupby(["date", dep_apt_col]).size().reset_index(name="Departures")
+
+    # Merge into a single table
+    daily_mov = pd.merge(
+        arrivals_daily,
+        departures_daily,
+        how="outer",
+        left_on=["date", arr_apt_col],
+        right_on=["date", dep_apt_col],
+    ).fillna(0)
+    daily_mov["Airport"] = daily_mov[arr_apt_col].combine_first(daily_mov[dep_apt_col])
+    daily_mov = daily_mov[["date", "Airport", "Arrivals", "Departures"]]
+
+    # Filter only selected airports
+    daily_mov = daily_mov[daily_mov["Airport"].isin(airports)]
+
+    if daily_mov.empty:
+        st.warning("No matching airport data found in selected files.")
+    else:
+        airport = st.selectbox("Select airport for forecast", sorted(daily_mov["Airport"].unique()), key="mov_airport")
+        metric = st.selectbox("Select metric to forecast", ["Arrivals", "Departures"], key="mov_metric")
+
+        df = daily_mov[daily_mov["Airport"] == airport][["date", metric]].rename(
+            columns={"date": "ds", metric: "y"}
+        )
+        df = df.groupby("ds").sum().reset_index()
+
+        if len(df) < 10:
+            st.warning("Not enough historical data for reliable forecasting.")
+        else:
+            model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+            model.fit(df)
+            future = model.make_future_dataframe(periods=forecast_days)
+            forecast = model.predict(future)
+
+            # --- Plot ---
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df["ds"], y=df["y"], name="Historical", mode="lines"))
+            fig.add_trace(go.Scatter(x=forecast["ds"], y=forecast["yhat"], name="Forecast", mode="lines"))
+            fig.add_trace(
+                go.Scatter(
+                    x=forecast["ds"],
+                    y=forecast["yhat_upper"],
+                    name="Upper CI",
+                    mode="lines",
+                    line=dict(width=0),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=forecast["ds"],
+                    y=forecast["yhat_lower"],
+                    name="Lower CI",
+                    mode="lines",
+                    line=dict(width=0),
+                    fill="tonexty",
+                )
+            )
+            fig.update_layout(
+                title=f"{airport} {metric} Forecast ({forecast_days}-day horizon)",
+                xaxis_title="Date",
+                yaxis_title=f"{metric} per Day",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Summary table
+            st.subheader("Forecast Summary")
+            st.dataframe(
+                forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
+                use_container_width=True,
+            )
+
+            st.caption(
+                "Daily movement forecast using Prophet model with weekly and yearly seasonality. "
+                "Values represent expected number of movements ±80% confidence interval."
+            )
+else:
+    st.info("Upload both CSV files to enable movement forecasting.")
+
