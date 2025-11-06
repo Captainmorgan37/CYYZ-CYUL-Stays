@@ -615,7 +615,10 @@ if not arr_raw.empty and not dep_raw.empty:
             tmp = combined[["Date", "Overnights_A_check"]].copy()
             tmp["Airport"] = apt
             hist_rows.append(tmp)
-    hist_df = pd.concat(hist_rows, ignore_index=True)
+    if hist_rows:
+        hist_df = pd.concat(hist_rows, ignore_index=True)
+    else:
+        hist_df = pd.DataFrame(columns=["Date", "Overnights_A_check", "Airport"])
 
     if hist_df.empty:
         st.info("Run the overnight calculation first to generate historical data.")
