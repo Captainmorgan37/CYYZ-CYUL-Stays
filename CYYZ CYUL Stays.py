@@ -595,13 +595,16 @@ else:
 
 
 # ===============================
-# Forecast Tab – Predictive Movements (Arrivals & Departures)
+# Forecast Tab – Predictive Movements (Arrivals, Departures & Total Load)
 # ===============================
-st.header("📈 Predictive Movements (Arrivals & Departures)")
+st.header("📈 Predictive Movements (Arrivals, Departures & Total Load)")
 
 if not arr_raw.empty and not dep_raw.empty:
     st.subheader("Daily Movement Forecast")
-    st.caption("Predict expected arrivals and departures based on historical daily counts.")
+    st.caption(
+        "Predict expected arrivals, departures, and total daily movements based on historical data. "
+        "Use the toggle to include historical data in the forecast chart."
+    )
 
     import numpy as np
     from prophet import Prophet
@@ -613,7 +616,7 @@ if not arr_raw.empty and not dep_raw.empty:
     arr = arr_raw.copy()
     dep = dep_raw.copy()
 
-    # Determine column names dynamically (works for uploads or built-in schema)
+    # Dynamic column mapping for uploaded CSVs
     arr_time_col = pick_col(arr.columns, ["On-Block (Act)", "Arrival_Time", "On Block", "OnBlock"])
     dep_time_col = pick_col(dep.columns, ["Off-Block (Act)", "Departure_Time", "Off Block", "OffBlock"])
     arr_apt_col = pick_col(arr.columns, ["To (ICAO)", "Destination", "To"])
@@ -628,7 +631,7 @@ if not arr_raw.empty and not dep_raw.empty:
     arrivals_daily = arr.groupby(["date", arr_apt_col]).size().reset_index(name="Arrivals")
     departures_daily = dep.groupby(["date", dep_apt_col]).size().reset_index(name="Departures")
 
-    # Merge into a single table
+    # Merge arrivals and departures
     daily_mov = pd.merge(
         arrivals_daily,
         departures_daily,
@@ -636,72 +639,127 @@ if not arr_raw.empty and not dep_raw.empty:
         left_on=["date", arr_apt_col],
         right_on=["date", dep_apt_col],
     ).fillna(0)
-    daily_mov["Airport"] = daily_mov[arr_apt_col].combine_first(daily_mov[dep_apt_col])
-    daily_mov = daily_mov[["date", "Airport", "Arrivals", "Departures"]]
 
-    # Filter only selected airports
+    daily_mov["Airport"] = daily_mov[arr_apt_col].combine_first(daily_mov[dep_apt_col])
+    daily_mov["Arrivals"] = daily_mov["Arrivals"].astype(int)
+    daily_mov["Departures"] = daily_mov["Departures"].astype(int)
+    daily_mov["Ground_Load_Index"] = daily_mov["Arrivals"] + daily_mov["Departures"]
+    daily_mov = daily_mov[["date", "Airport", "Arrivals", "Departures", "Ground_Load_Index"]]
+
+    # Filter to selected airports
     daily_mov = daily_mov[daily_mov["Airport"].isin(airports)]
 
     if daily_mov.empty:
         st.warning("No matching airport data found in selected files.")
     else:
-        airport = st.selectbox("Select airport for forecast", sorted(daily_mov["Airport"].unique()), key="mov_airport")
-        metric = st.selectbox("Select metric to forecast", ["Arrivals", "Departures"], key="mov_metric")
-
-        df = daily_mov[daily_mov["Airport"] == airport][["date", metric]].rename(
-            columns={"date": "ds", metric: "y"}
+        airport = st.selectbox(
+            "Select airport for forecast",
+            sorted(daily_mov["Airport"].unique()),
+            key="mov_airport",
         )
-        df = df.groupby("ds").sum().reset_index()
+        metric = st.selectbox(
+            "Select metric to forecast",
+            ["Arrivals", "Departures", "Ground_Load_Index"],
+            key="mov_metric",
+        )
+        show_historical = st.checkbox("Show historical overlay", value=True, key="mov_show_hist")
 
-        if len(df) < 10:
-            st.warning("Not enough historical data for reliable forecasting.")
-        else:
-            model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-            model.fit(df)
-            future = model.make_future_dataframe(periods=forecast_days)
-            forecast = model.predict(future)
+        df = daily_mov[daily_mov["Airport"] == airport][["date", "Arrivals", "Departures", "Ground_Load_Index"]]
+        df = df.groupby("date").sum().reset_index()
 
-            # --- Plot ---
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df["ds"], y=df["y"], name="Historical", mode="lines"))
-            fig.add_trace(go.Scatter(x=forecast["ds"], y=forecast["yhat"], name="Forecast", mode="lines"))
+        # Build Prophet model
+        m = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+        df_train = df.rename(columns={"date": "ds", metric: "y"})
+        m.fit(df_train[["ds", "y"]])
+        future = m.make_future_dataframe(periods=forecast_days)
+        forecast = m.predict(future)
+
+        # --- Plotly chart ---
+        fig = go.Figure()
+
+        # Forecast band
+        fig.add_trace(
+            go.Scatter(
+                x=forecast["ds"],
+                y=forecast["yhat_upper"],
+                mode="lines",
+                line=dict(width=0),
+                name="Upper CI",
+                hoverinfo="skip",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=forecast["ds"],
+                y=forecast["yhat_lower"],
+                mode="lines",
+                fill="tonexty",
+                line=dict(width=0),
+                name="Lower CI",
+                hoverinfo="skip",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=forecast["ds"],
+                y=forecast["yhat"],
+                mode="lines",
+                name=f"{metric} Forecast",
+                line=dict(width=3),
+            )
+        )
+
+        # Optional historical overlay
+        if show_historical:
             fig.add_trace(
                 go.Scatter(
-                    x=forecast["ds"],
-                    y=forecast["yhat_upper"],
-                    name="Upper CI",
+                    x=df["date"],
+                    y=df["Arrivals"],
+                    name="Historical Arrivals",
                     mode="lines",
-                    line=dict(width=0),
+                    line=dict(dash="dot", width=2),
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    x=forecast["ds"],
-                    y=forecast["yhat_lower"],
-                    name="Lower CI",
+                    x=df["date"],
+                    y=df["Departures"],
+                    name="Historical Departures",
                     mode="lines",
-                    line=dict(width=0),
-                    fill="tonexty",
+                    line=dict(dash="dot", width=2),
                 )
             )
-            fig.update_layout(
-                title=f"{airport} {metric} Forecast ({forecast_days}-day horizon)",
-                xaxis_title="Date",
-                yaxis_title=f"{metric} per Day",
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if metric == "Ground_Load_Index":
+                fig.add_trace(
+                    go.Scatter(
+                        x=df["date"],
+                        y=df["Ground_Load_Index"],
+                        name="Historical Ground Load",
+                        mode="lines",
+                        line=dict(dash="dot", width=2),
+                    )
+                )
 
-            # Summary table
-            st.subheader("Forecast Summary")
-            st.dataframe(
-                forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
-                use_container_width=True,
-            )
+        fig.update_layout(
+            title=f"{airport} {metric} Forecast ({forecast_days}-day horizon)",
+            xaxis_title="Date",
+            yaxis_title=f"{metric} per Day",
+            legend_title="Series",
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(
-                "Daily movement forecast using Prophet model with weekly and yearly seasonality. "
-                "Values represent expected number of movements ±80% confidence interval."
-            )
+        # Summary table
+        st.subheader("Forecast Summary")
+        st.dataframe(
+            forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Forecast generated with Prophet using weekly and yearly seasonality. "
+            "Confidence interval represents ±80%. "
+            "Ground Load Index = Arrivals + Departures. Toggle the historical overlay for full movement context."
+        )
 else:
     st.info("Upload both CSV files to enable movement forecasting.")
-
