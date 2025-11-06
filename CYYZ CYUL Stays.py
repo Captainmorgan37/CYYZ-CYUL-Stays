@@ -3,6 +3,7 @@ import calendar
 import io
 from collections import deque
 from datetime import datetime, timedelta, time
+from pathlib import Path
 
 import pandas as pd
 import pytz
@@ -13,7 +14,15 @@ import streamlit as st
 # ===============================
 st.set_page_config(page_title="CYYZ Overnights Calculator", layout="wide")
 st.title("CYYZ Overnights Calculator")
-st.caption("Upload FL3XX arrivals/departures CSVs for a selected date range and compute overnight counts by day (two metrics).")
+st.caption(
+    "The app now ships with baseline FL3XX arrivals/departures CSVs. Upload optional"
+    " supplements for additional coverage, then compute overnight counts by day"
+    " (two metrics)."
+)
+
+DATA_DIR = Path(__file__).resolve().parent / "data"
+ARRIVALS_DATA_PATH = DATA_DIR / "arrivals_all.csv"
+DEPARTURES_DATA_PATH = DATA_DIR / "departures_all.csv"
 
 # ===============================
 # Helpers
@@ -37,6 +46,16 @@ def flexible_read_csv(file) -> pd.DataFrame:
             continue
     bio.seek(0)
     return pd.read_csv(bio)
+
+
+@st.cache_data(show_spinner=False)
+def load_local_dataset(path: str) -> pd.DataFrame:
+    """Load a CSV from the repository if it exists."""
+
+    file_path = Path(path)
+    if not file_path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(file_path)
 
 def pick_col(cols, preferred_list):
     """Return the first exact (case-insensitive) match; else first 'contains' match; else None."""
@@ -127,21 +146,68 @@ def build_results_csv(
 # ===============================
 # Inputs
 # ===============================
-st.subheader("1) Upload CSVs")
-col_u1, col_u2 = st.columns(2)
-with col_u1:
-    f_arrivals = st.file_uploader("Arrivals CSV (TO CYYZ …)", type=["csv"], key="arr")
-with col_u2:
-    f_departures = st.file_uploader("Departures CSV (FROM CYYZ …)", type=["csv"], key="dep")
+st.subheader("1) Data sources")
 
-arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
-dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
+arr_base = load_local_dataset(str(ARRIVALS_DATA_PATH))
+dep_base = load_local_dataset(str(DEPARTURES_DATA_PATH))
+
+col_sources, col_upload = st.columns([1.2, 1.2])
+with col_sources:
+    st.markdown("**Built-in datasets**")
+    if arr_base.empty or dep_base.empty:
+        st.error(
+            "Baseline CSVs were not found. Upload arrivals and departures manually, "
+            "or restore `data/arrivals_all.csv` and `data/departures_all.csv`."
+        )
+    else:
+        st.caption(
+            f"Arrivals: `{ARRIVALS_DATA_PATH.name}` ({len(arr_base):,} rows)\n"
+            f"Departures: `{DEPARTURES_DATA_PATH.name}` ({len(dep_base):,} rows)"
+        )
+        with st.expander("Preview built-in arrivals (first 20 rows)"):
+            st.dataframe(arr_base.head(20), use_container_width=True)
+        with st.expander("Preview built-in departures (first 20 rows)"):
+            st.dataframe(dep_base.head(20), use_container_width=True)
+
+with col_upload:
+    st.markdown("**Optional supplemental uploads**")
+    st.caption(
+        "Upload additional CSVs to extend the built-in history. Uploaded rows will be "
+        "appended (duplicates dropped)."
+    )
+    f_arrivals = st.file_uploader(
+        "Supplemental arrivals CSV (TO CYYZ …)", type=["csv"], key="arr"
+    )
+    f_departures = st.file_uploader(
+        "Supplemental departures CSV (FROM CYYZ …)", type=["csv"], key="dep"
+    )
+
+arr_sources = []
+if not arr_base.empty:
+    arr_sources.append(arr_base)
+if f_arrivals:
+    extra_arr = flexible_read_csv(f_arrivals)
+    if not extra_arr.empty:
+        arr_sources.append(extra_arr)
+
+dep_sources = []
+if not dep_base.empty:
+    dep_sources.append(dep_base)
+if f_departures:
+    extra_dep = flexible_read_csv(f_departures)
+    if not extra_dep.empty:
+        dep_sources.append(extra_dep)
+
+arr_raw = pd.concat(arr_sources, ignore_index=True) if arr_sources else pd.DataFrame()
+dep_raw = pd.concat(dep_sources, ignore_index=True) if dep_sources else pd.DataFrame()
 
 if not arr_raw.empty:
-    with st.expander("Preview: Arrivals (first 20 rows)"):
+    arr_raw = arr_raw.drop_duplicates().reset_index(drop=True)
+    with st.expander("Preview combined arrivals (first 20 rows)"):
         st.dataframe(arr_raw.head(20), use_container_width=True)
 if not dep_raw.empty:
-    with st.expander("Preview: Departures (first 20 rows)"):
+    dep_raw = dep_raw.drop_duplicates().reset_index(drop=True)
+    with st.expander("Preview combined departures (first 20 rows)"):
         st.dataframe(dep_raw.head(20), use_container_width=True)
 
 st.subheader("2) Settings")
@@ -315,6 +381,30 @@ if not arr_raw.empty and not dep_raw.empty:
                 datetime(last_date.year, last_date.month, last_date.day, night_end.hour, night_end.minute)
             )
         clip_end = max(end_local, check_dt_last, last_window_end)
+
+        coverage_start_candidates = []
+        coverage_end_candidates = []
+        if not arr.empty:
+            coverage_start_candidates.append(arr["arr_dt"].min())
+            coverage_end_candidates.append(arr["arr_dt"].max())
+        if not dep.empty:
+            coverage_start_candidates.append(dep["dep_dt"].min())
+            coverage_end_candidates.append(dep["dep_dt"].max())
+        if coverage_start_candidates and coverage_end_candidates:
+            coverage_start = min(coverage_start_candidates)
+            coverage_end = max(coverage_end_candidates)
+            if pd.notna(coverage_start) and coverage_start.date() > start_local.date():
+                st.warning(
+                    "The available data begins on "
+                    f"{coverage_start.date().isoformat()} local time. Upload supplemental "
+                    "CSVs to cover earlier dates."
+                )
+            if pd.notna(coverage_end) and coverage_end.date() < end_local.date():
+                st.warning(
+                    "The available data ends on "
+                    f"{coverage_end.date().isoformat()} local time. Upload supplemental "
+                    "CSVs to extend the range."
+                )
 
         def compute_airport_metrics(airport_code: str):
             arr_filtered = arr[arr["airport_dest"] == airport_code].copy()
@@ -524,7 +614,10 @@ if not arr_raw.empty and not dep_raw.empty:
             f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
         )
 else:
-    st.info("Upload both CSVs to configure column mapping and run the calculation.")
+    st.info(
+        "No arrivals/departures data available. Upload both CSVs or ensure the built-in"
+        " datasets are present in the `data/` folder."
+    )
 
 
 
