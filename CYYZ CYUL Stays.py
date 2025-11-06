@@ -459,15 +459,12 @@ if not arr_raw.empty and not dep_raw.empty:
                     if kind == 0:  # arrival
                         queue.append(ts)
                     else:  # departure
-                        while queue:
-                            arr_candidate = queue[0]
-                            # If the earliest arrival isn't strictly before this departure,
-                            # leave it in the queue for a later match (avoids zero-length pairs).
-                            if arr_candidate >= ts:
-                                break
-                            arr_t = queue.popleft()
-                            if ts > arr_t:
-                                own_intervals.append((arr_t, ts))
+                        while queue and queue[0] <= ts:
+                            arr_candidate = queue.popleft()
+                            # Ignore zero-length intervals but remove the arrival so it doesn't
+                            # linger indefinitely (which would mark the tail on-ground forever).
+                            if ts > arr_candidate:
+                                own_intervals.append((arr_candidate, ts))
                                 break
                         # if there's no matching arrival, skip the departure
 
