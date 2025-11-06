@@ -293,6 +293,11 @@ if data_available:
         st.subheader("3) Column Mapping")
         st.caption("Using built-in schema (no manual mapping required).")
 
+        # Define arr_map / dep_map so later steps can use them
+        arr_map = {c.lower(): c for c in arr_raw.columns}
+        dep_map = {c.lower(): c for c in dep_raw.columns}
+
+
         # Coverage check
         if ts_source_tz.startswith("UTC"):
             arr_dt = parse_flexible_utc_to_local(arr_raw[arr_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
