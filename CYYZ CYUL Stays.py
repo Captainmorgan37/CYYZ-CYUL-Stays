@@ -8,23 +8,6 @@ import pandas as pd
 import pytz
 import streamlit as st
 
-@st.cache_data(show_spinner=False)
-def load_prebuilt_movements():
-    import os
-    base = os.path.join(os.path.dirname(__file__), "data")
-    arrivals = pd.read_csv(os.path.join(base, "arrivals_all.csv"))
-    departures = pd.read_csv(os.path.join(base, "departures_all.csv"))
-    return arrivals, departures
-
-def range_is_within_data(start_date, end_date, df):
-    """Check if the requested range is fully within the available dataset dates."""
-    if df.empty or "On-Block (Act)" not in df.columns:
-        return False
-    all_dates = pd.to_datetime(df["On-Block (Act)"], errors="coerce")
-    min_d, max_d = all_dates.min().date(), all_dates.max().date()
-    return (start_date >= min_d) and (end_date <= max_d)
-
-
 # ===============================
 # Page config & title
 # ===============================
@@ -32,22 +15,9 @@ st.set_page_config(page_title="CYYZ Overnights Calculator", layout="wide")
 st.title("CYYZ Overnights Calculator")
 st.caption("Upload FL3XX arrivals/departures CSVs for a selected date range and compute overnight counts by day (two metrics).")
 
-use_prebuilt = st.checkbox("Use prebuilt historical data (faster startup)", value=True)
-if use_prebuilt:
-    arr_raw, dep_raw = load_prebuilt_movements()
-    st.success("Loaded prebuilt arrivals/departures from 2023–2025.")
-else:
-    # fall back to upload logic
-    f_arrivals = st.file_uploader("Arrivals CSV", type=["csv"], key="arr")
-    f_departures = st.file_uploader("Departures CSV", type=["csv"], key="dep")
-    arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
-    dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
-
-
 # ===============================
 # Helpers
 # ===============================
-
 @st.cache_data(show_spinner=False)
 def flexible_read_csv(file) -> pd.DataFrame:
     """Try common delimiters; fall back to default."""
@@ -155,74 +125,17 @@ def build_results_csv(
 
 
 # ===============================
-# Inputs (with built-in dataset support)
+# Inputs
 # ===============================
-st.subheader("1) Upload CSVs or Use Built-in Dataset")
+st.subheader("1) Upload CSVs")
+col_u1, col_u2 = st.columns(2)
+with col_u1:
+    f_arrivals = st.file_uploader("Arrivals CSV (TO CYYZ …)", type=["csv"], key="arr")
+with col_u2:
+    f_departures = st.file_uploader("Departures CSV (FROM CYYZ …)", type=["csv"], key="dep")
 
-@st.cache_data(show_spinner=False)
-def load_prebuilt_movements():
-    """Load built-in historical movements (arrivals/departures)."""
-    import os
-    base = os.path.join(os.path.dirname(__file__), "data")
-    arr = pd.read_csv(os.path.join(base, "arrivals_all.csv"))
-    dep = pd.read_csv(os.path.join(base, "departures_all.csv"))
-    return arr, dep
-
-
-use_prebuilt = st.checkbox("Use built-in historical dataset (faster)", value=True)
-
-if use_prebuilt:
-    try:
-        arr_raw, dep_raw = load_prebuilt_movements()
-        data_source = "prebuilt"
-        st.success("Loaded built-in arrivals/departures (2023–2025).")
-
-        # --- Auto-standardize column names for internal compatibility ---
-        rename_map_arr = {
-            "Aircraft": "Tail",
-            "Aircraft Type": "Aircraft Type",
-            "On-Block (Act)": "Arrival_Time",
-            "To (ICAO)": "To (ICAO)"
-        }
-        rename_map_dep = {
-            "Aircraft": "Tail",
-            "Aircraft Type": "Aircraft Type",
-            "Off-Block (Act)": "Departure_Time",
-            "From (ICAO)": "From (ICAO)"
-        }
-        arr_raw.rename(columns=rename_map_arr, inplace=True)
-        dep_raw.rename(columns=rename_map_dep, inplace=True)
-
-        # --- Set the expected column variables for later steps ---
-        arr_time_col = (
-            arr_map.get("on_block_actual")
-            or arr_map.get("onblock")
-            or arr_map.get("on-block (act)")
-            or arr_map.get("on-block")
-        )
-        dep_time_col = (
-            dep_map.get("off_block_actual")
-            or dep_map.get("offblock")
-            or dep_map.get("off-block (act)")
-            or dep_map.get("off-block")
-        )
-
-
-    except Exception as e:
-        data_source = "upload"
-        st.warning(f"Could not load built-in dataset ({e}). Please upload CSVs instead.")
-
-else:
-    data_source = "upload"
-
-if data_source == "upload":
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        f_arrivals = st.file_uploader("Arrivals CSV (TO CYYZ …)", type=["csv"], key="arr")
-    with col_u2:
-        f_departures = st.file_uploader("Departures CSV (FROM CYYZ …)", type=["csv"], key="dep")
-    arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
-    dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
+arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
+dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
 
 if not arr_raw.empty:
     with st.expander("Preview: Arrivals (first 20 rows)"):
@@ -230,7 +143,6 @@ if not arr_raw.empty:
 if not dep_raw.empty:
     with st.expander("Preview: Departures (first 20 rows)"):
         st.dataframe(dep_raw.head(20), use_container_width=True)
-
 
 st.subheader("2) Settings")
 col_a, col_b = st.columns([1.2, 1.2])
@@ -282,98 +194,37 @@ dayfirst_ui = st.checkbox("Parse dates as day-first (e.g., 01.08.2025 = 1 Aug 20
 st.caption("All calculations are performed in the selected **Local timezone** (default America/Toronto).")
 
 # Column mapping UI
-data_available = (not arr_raw.empty) and (not dep_raw.empty)
+if not arr_raw.empty and not dep_raw.empty:
+    st.subheader("3) Column Mapping")
+    arr_cols = list(arr_raw.columns)
+    dep_cols = list(dep_raw.columns)
 
-if data_available:
-    if data_source == "prebuilt":
-        # Auto-map known headers
-        arr_to_col, arr_time_col, arr_type_col, tail_arr = "To (ICAO)", "Arrival_Time", "Aircraft Type", "Tail"
-        dep_from_col, dep_time_col, dep_type_col, tail_dep = "From (ICAO)", "Departure_Time", "Aircraft Type", "Tail"
+    # Sensible defaults (prefer Actual)
+    default_arr_tail = pick_col(arr_cols, ["Aircraft", "Tail", "Registration", "A/C"])
+    default_dep_tail = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
+    default_to = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
+    default_from = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
+    default_arr_time = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
+    default_dep_time = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
+    default_arr_type = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
+    default_dep_type = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
 
-        st.subheader("3) Column Mapping")
-        st.caption("Using built-in schema (no manual mapping required).")
+    c1, c2 = st.columns(2)
+    with c1:
+        tail_arr = st.selectbox("Arrivals: Tail/Registration", arr_cols, index=arr_cols.index(default_arr_tail) if default_arr_tail in arr_cols else 0)
+        arr_to_col = st.selectbox("Arrivals: To (ICAO)", arr_cols, index=arr_cols.index(default_to) if default_to in arr_cols else 0)
+        arr_time_col = st.selectbox("Arrivals: Arrival time", arr_cols, index=arr_cols.index(default_arr_time) if default_arr_time in arr_cols else 0)
+        arr_type_options = ["<None>"] + arr_cols
+        arr_type_idx = arr_type_options.index(default_arr_type) if default_arr_type in arr_cols else 0
+        arr_type_col = st.selectbox("Arrivals: Aircraft type (optional)", arr_type_options, index=arr_type_idx)
+    with c2:
+        tail_dep = st.selectbox("Departures: Tail/Registration", dep_cols, index=dep_cols.index(default_dep_tail) if default_dep_tail in dep_cols else 0)
+        dep_from_col = st.selectbox("Departures: From (ICAO)", dep_cols, index=dep_cols.index(default_from) if default_from in dep_cols else 0)
+        dep_time_col = st.selectbox("Departures: Departure time", dep_cols, index=dep_cols.index(default_dep_time) if default_dep_time in dep_cols else 0)
+        dep_type_options = ["<None>"] + dep_cols
+        dep_type_idx = dep_type_options.index(default_dep_type) if default_dep_type in dep_cols else 0
+        dep_type_col = st.selectbox("Departures: Aircraft type (optional)", dep_type_options, index=dep_type_idx)
 
-        # Define arr_map / dep_map so later steps can use them
-        arr_map = {c.lower(): c for c in arr_raw.columns}
-        dep_map = {c.lower(): c for c in dep_raw.columns}
-
-
-        # Coverage check
-        if ts_source_tz.startswith("UTC"):
-            arr_dt = parse_flexible_utc_to_local(arr_raw[arr_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
-            dep_dt = parse_flexible_utc_to_local(dep_raw[dep_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
-        else:
-            arr_dt = localize_naive(arr_raw[arr_time_col], LOCAL_TZ)
-            dep_dt = localize_naive(dep_raw[dep_time_col], LOCAL_TZ)
-
-        all_dt = pd.concat([arr_dt.dropna(), dep_dt.dropna()])
-        cov_start, cov_end = all_dt.min().date(), all_dt.max().date()
-        if start_date < cov_start or end_date > cov_end:
-            st.error(
-                f"Selected range {start_date} → {end_date} is outside built-in coverage "
-                f"({cov_start} → {cov_end})."
-            )
-            st.stop()
-        else:
-            st.caption(f"Using built-in coverage: **{cov_start} → {cov_end}**")
-
-    else:
-        # --- Existing mapping UI for uploaded CSVs ---
-        st.subheader("3) Column Mapping")
-        arr_cols = list(arr_raw.columns)
-        dep_cols = list(dep_raw.columns)
-
-        # Sensible defaults (prefer Actual)
-        default_arr_tail = pick_col(arr_cols, ["Aircraft", "Tail", "Registration", "A/C"])
-        default_dep_tail = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
-        default_to = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
-        default_from = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
-        default_arr_time = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
-        default_dep_time = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
-        default_arr_type = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
-        default_dep_type = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
-
-        c1, c2 = st.columns(2)
-        with c1:
-            tail_arr = st.selectbox(
-                "Arrivals: Tail/Registration",
-                arr_cols,
-                index=arr_cols.index(default_arr_tail) if default_arr_tail in arr_cols else 0,
-            )
-            arr_to_col = st.selectbox(
-                "Arrivals: To (ICAO)",
-                arr_cols,
-                index=arr_cols.index(default_to) if default_to in arr_cols else 0,
-            )
-            arr_time_col = st.selectbox(
-                "Arrivals: Arrival time",
-                arr_cols,
-                index=arr_cols.index(default_arr_time) if default_arr_time in arr_cols else 0,
-            )
-            arr_type_options = ["<None>"] + arr_cols
-            arr_type_idx = arr_type_options.index(default_arr_type) if default_arr_type in arr_cols else 0
-            arr_type_col = st.selectbox("Arrivals: Aircraft type (optional)", arr_type_options, index=arr_type_idx)
-        with c2:
-            tail_dep = st.selectbox(
-                "Departures: Tail/Registration",
-                dep_cols,
-                index=dep_cols.index(default_dep_tail) if default_dep_tail in dep_cols else 0,
-            )
-            dep_from_col = st.selectbox(
-                "Departures: From (ICAO)",
-                dep_cols,
-                index=dep_cols.index(default_from) if default_from in dep_cols else 0,
-            )
-            dep_time_col = st.selectbox(
-                "Departures: Departure time",
-                dep_cols,
-                index=dep_cols.index(default_dep_time) if default_dep_time in dep_cols else 0,
-            )
-            dep_type_options = ["<None>"] + dep_cols
-            dep_type_idx = dep_type_options.index(default_dep_type) if default_dep_type in dep_cols else 0
-            dep_type_col = st.selectbox("Departures: Aircraft type (optional)", dep_type_options, index=dep_type_idx)
-
-    # --- Shared logic below (runs for both prebuilt and uploaded datasets) ---
     st.subheader("4) Overnight Definitions")
     col_m1, col_m2 = st.columns(2)
     with col_m1:
@@ -381,15 +232,13 @@ if data_available:
     with col_m2:
         night_start = st.time_input("Metric B — Night window start (local)", value=time(20, 0))
         night_end = st.time_input("Metric B — Night window end (local, next day)", value=time(6, 0))
-    threshold_hours = st.slider(
-        "Metric B — Minimum on-ground within night window (hours)", 0.0, 12.0, 5.0, 0.5
-    )
+    threshold_hours = st.slider("Metric B — Minimum on-ground within night window (hours)", 0.0, 12.0, 5.0, 0.5)
 
     st.subheader("5) Pairing Options")
     assume_from_range_start = st.checkbox(
         "Assume a tail with departures but no earlier arrivals in this range was already on-ground from range start",
         value=False,
-        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the range) as being present from the start of the reporting range.",
+        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the range) as being present from the start of the reporting range."
     )
 
     st.subheader("6) Run")
@@ -623,123 +472,79 @@ if data_available:
                         "Hours": (e - s).total_seconds() / 3600.0,
                         "Aircraft_Type": tail_type_map.get(tail, "")
                     })
+            diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
 
-            # --- Patch for prebuilt data compatibility ---
-            diag_df = pd.DataFrame(diag_rows)
+            return combined, diagnostics, summary_counts, average_counts
 
-            # Auto-fix for missing standardized columns
-            if "Aircraft" in diag_df.columns and "Tail" not in diag_df.columns:
-                diag_df.rename(columns={"Aircraft": "Tail"}, inplace=True)
-            if "OnGroundStartLocal" in diag_df.columns and "OnGround_Start_Local" not in diag_df.columns:
-                diag_df.rename(columns={"OnGroundStartLocal": "OnGround_Start_Local"}, inplace=True)
-            if "OnGroundStart" in diag_df.columns and "OnGround_Start_Local" not in diag_df.columns:
-                diag_df.rename(columns={"OnGroundStart": "OnGround_Start_Local"}, inplace=True)
-
-            # Safeguard against missing columns or empty DataFrame
-            sort_cols = [c for c in ["Tail", "OnGround_Start_Local"] if c in diag_df.columns]
-            if sort_cols and not diag_df.empty:
-                diagnostics = diag_df.sort_values(sort_cols).reset_index(drop=True)
-            else:
-                diagnostics = diag_df.copy()  # empty or minimal DataFrame
-
-                return combined, diagnostics, summary_counts, average_counts
-
-
-# =========================================================
-# After function definition – main app results section
-# =========================================================
-
-# Ensure metrics dictionary exists and compute if needed
-if "metrics" not in locals():
-    metrics = {}
-
-if not metrics and airports:
-    with st.spinner("Computing metrics..."):
         metrics = {apt: compute_airport_metrics(apt) for apt in airports}
 
-if not metrics:
-    st.error("No metrics computed — please check your date range and input data.")
-    st.stop()
+        st.success(f"Computed for {', '.join(airports)}!")
 
-# =========================================================
-# After function definition – main app results section
-# =========================================================
+        st.subheader("Results")
+        tabs = st.tabs([f"{apt}" for apt in airports])
+        for tab, apt in zip(tabs, airports):
+            combined, diagnostics, summary_counts, average_counts = metrics[apt]
+            with tab:
+                st.markdown(f"### {apt}")
+                st.dataframe(combined, use_container_width=True)
 
-# Ensure metrics dictionary exists and compute if needed
-if "metrics" not in locals():
-    metrics = {}
+                st.subheader("Daily summary by aircraft category")
+                st.dataframe(summary_counts, use_container_width=True)
 
-if not metrics and airports:
-    with st.spinner("Computing metrics..."):
-        metrics = {apt: compute_airport_metrics(apt) for apt in airports}
+                st.subheader("Average aircraft counts per day (by metric)")
+                st.dataframe(average_counts, use_container_width=True)
 
-if not metrics:
-    st.error("No metrics computed — please check your date range and input data.")
-    st.stop()
+                st.subheader("Diagnostics (on-ground intervals per tail)")
+                st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
+                st.dataframe(diagnostics, use_container_width=True, height=400)
 
-# ===============================
-# Results Display
-# ===============================
-st.subheader("Results")
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.download_button(
+                        "Download results (CSV)",
+                        data=build_results_csv(combined, summary_counts, average_counts),
+                        file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
+                        mime="text/csv"
+                    )
+                with col_d2:
+                    st.download_button(
+                        "Download diagnostics (CSV)",
+                        data=diagnostics.to_csv(index=False).encode("utf-8"),
+                        file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
+                        mime="text/csv"
+                    )
 
-tabs = st.tabs([f"{apt}" for apt in airports])
-for tab, apt in zip(tabs, airports):
-    combined, diagnostics, summary_counts, average_counts = metrics[apt]
-    with tab:
-        st.markdown(f"### {apt}")
-        st.dataframe(combined, use_container_width=True)
+        st.markdown(
+            f"**Notes:**\n"
+            f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
+            f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
+            f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
+            f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
+            f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
+            f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
+        )
+else:
+    st.info("Upload both CSVs to configure column mapping and run the calculation.")
 
-        st.subheader("Daily summary by aircraft category")
-        st.dataframe(summary_counts, use_container_width=True)
 
-        st.subheader("Average aircraft counts per day (by metric)")
-        st.dataframe(average_counts, use_container_width=True)
-
-        st.subheader("Diagnostics (on-ground intervals per tail)")
-        st.caption("Use this to spot-check pairings and durations. Filter by Tail with the column tools.")
-        st.dataframe(diagnostics, use_container_width=True, height=400)
-
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            st.download_button(
-                "Download results (CSV)",
-                data=build_results_csv(combined, summary_counts, average_counts),
-                file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
-                mime="text/csv",
-            )
-        with col_d2:
-            st.download_button(
-                "Download diagnostics (CSV)",
-                data=diagnostics.to_csv(index=False).encode("utf-8"),
-                file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
-                mime="text/csv",
-            )
-
-st.markdown(
-    f"**Notes:**\n"
-    f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
-    f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
-    f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
-    f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
-    f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
-    f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
-)
 
 # ===============================
 # Forecast Tab – Predictive Schedule
 # ===============================
 st.header("✈ Predictive Schedule (Experimental)")
 
-if "metrics" in locals() and metrics:
+if not arr_raw.empty and not dep_raw.empty:
     st.subheader("Historical Pattern Forecast")
-    st.caption("Based on historical overnight counts since the start of your selected range.")
+    st.caption("Based on historical overnight counts since 2024, predict expected stays for upcoming days.")
 
     import numpy as np
     from prophet import Prophet
     import plotly.express as px
 
+    # Let the user choose forecast length
     forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30)
 
+    # Build historical daily counts from combined results
     all_airports = airports or ["CYYZ"]
     hist_rows = []
     for apt in all_airports:
@@ -748,11 +553,12 @@ if "metrics" in locals() and metrics:
             tmp = combined[["Date", "Overnights_A_check"]].copy()
             tmp["Airport"] = apt
             hist_rows.append(tmp)
+    hist_df = pd.concat(hist_rows, ignore_index=True)
 
-    if not hist_rows:
+    if hist_df.empty:
         st.info("Run the overnight calculation first to generate historical data.")
     else:
-        hist_df = pd.concat(hist_rows, ignore_index=True)
+        # Prophet expects columns named 'ds' (date) and 'y' (value)
         airport = st.selectbox("Select airport for forecast", all_airports)
         df_airport = hist_df[hist_df["Airport"] == airport][["Date", "Overnights_A_check"]].rename(
             columns={"Date": "ds", "Overnights_A_check": "y"}
@@ -764,20 +570,20 @@ if "metrics" in locals() and metrics:
         future = model.make_future_dataframe(periods=forecast_days)
         forecast = model.predict(future)
 
-        import plotly.express as px
         fig = px.line(
             forecast,
             x="ds",
             y=["yhat", "yhat_lower", "yhat_upper"],
             labels={"ds": "Date", "value": "Predicted Overnights"},
-            title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)",
+            title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)"
         )
         st.plotly_chart(fig, use_container_width=True)
 
+        # Summary table
         st.subheader("Forecast Summary")
         st.dataframe(
             forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
-            use_container_width=True,
+            use_container_width=True
         )
 
         st.caption(
