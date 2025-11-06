@@ -204,7 +204,7 @@ def build_daily_movements(arr_df, dep_df, dayfirst=True):
     return daily_mov
 
 # --- Step 5: Cached dataset ready for reuse in forecast tabs ---
-daily_mov = build_daily_movements(arr_raw, dep_raw, dayfirst=dayfirst_ui)
+
 
 
 if not arr_raw.empty:
@@ -260,6 +260,7 @@ LOCAL_TZ = pytz.timezone(local_tz_name)
 
 # New: day-first parsing toggle (for '01.08.2025' = 1 Aug 2025)
 dayfirst_ui = st.checkbox("Parse dates as day-first (e.g., 01.08.2025 = 1 Aug 2025)", value=True)
+daily_mov = build_daily_movements(arr_raw, dep_raw, dayfirst=dayfirst_ui)
 
 st.caption("All calculations are performed in the selected **Local timezone** (default America/Toronto).")
 
