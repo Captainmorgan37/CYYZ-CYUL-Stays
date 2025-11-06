@@ -134,78 +134,8 @@ with col_u1:
 with col_u2:
     f_departures = st.file_uploader("Departures CSV (FROM CYYZ …)", type=["csv"], key="dep")
 
-# --- Step 1: Persistent storage for uploaded data ---
-if "arr_raw" not in st.session_state:
-    st.session_state["arr_raw"] = pd.DataFrame()
-if "dep_raw" not in st.session_state:
-    st.session_state["dep_raw"] = pd.DataFrame()
-
-# --- Step 2: When new files uploaded, read & store permanently ---
-if f_arrivals is not None:
-    arr_raw = flexible_read_csv(f_arrivals)
-    st.session_state["arr_raw"] = arr_raw
-elif not st.session_state["arr_raw"].empty:
-    arr_raw = st.session_state["arr_raw"]
-else:
-    arr_raw = pd.DataFrame()
-
-if f_departures is not None:
-    dep_raw = flexible_read_csv(f_departures)
-    st.session_state["dep_raw"] = dep_raw
-elif not st.session_state["dep_raw"].empty:
-    dep_raw = st.session_state["dep_raw"]
-else:
-    dep_raw = pd.DataFrame()
-
-# --- Step 3: Always read from session_state going forward ---
-arr_raw = st.session_state["arr_raw"]
-dep_raw = st.session_state["dep_raw"]
-
-# --- Step 4: Cached daily movement aggregator ---
-@st.cache_data(show_spinner=False)
-def build_daily_movements(arr_df, dep_df, dayfirst=True):
-    """Aggregate daily arrivals/departures per airport."""
-    if arr_df.empty or dep_df.empty:
-        return pd.DataFrame()
-
-    def pick_col(cols, opts):
-        for opt in opts:
-            for c in cols:
-                if opt.lower() in c.lower():
-                    return c
-        return cols[0] if len(cols) > 0 else None
-
-    arr_time_col = pick_col(arr_df.columns, ["On-Block (Act)", "Arrival_Time", "On Block", "OnBlock"])
-    dep_time_col = pick_col(dep_df.columns, ["Off-Block (Act)", "Departure_Time", "Off Block", "OffBlock"])
-    arr_apt_col = pick_col(arr_df.columns, ["To (ICAO)", "Destination", "To"])
-    dep_apt_col = pick_col(dep_df.columns, ["From (ICAO)", "Origin", "From"])
-
-    arr_df["date"] = pd.to_datetime(arr_df[arr_time_col], errors="coerce", dayfirst=dayfirst).dt.date
-    dep_df["date"] = pd.to_datetime(dep_df[dep_time_col], errors="coerce", dayfirst=dayfirst).dt.date
-    arr_df[arr_apt_col] = arr_df[arr_apt_col].astype(str).str.upper().str.strip()
-    dep_df[dep_apt_col] = dep_df[dep_apt_col].astype(str).str.upper().str.strip()
-
-    arrivals_daily = arr_df.groupby(["date", arr_apt_col]).size().reset_index(name="Arrivals")
-    departures_daily = dep_df.groupby(["date", dep_apt_col]).size().reset_index(name="Departures")
-
-    daily_mov = pd.merge(
-        arrivals_daily,
-        departures_daily,
-        how="outer",
-        left_on=["date", arr_apt_col],
-        right_on=["date", dep_apt_col],
-    ).fillna(0)
-
-    daily_mov["Airport"] = daily_mov[arr_apt_col].combine_first(daily_mov[dep_apt_col])
-    daily_mov["Arrivals"] = daily_mov["Arrivals"].astype(int)
-    daily_mov["Departures"] = daily_mov["Departures"].astype(int)
-    daily_mov["Ground_Load_Index"] = daily_mov["Arrivals"] + daily_mov["Departures"]
-    daily_mov = daily_mov[["date", "Airport", "Arrivals", "Departures", "Ground_Load_Index"]]
-    return daily_mov
-
-# --- Step 5: Cached dataset ready for reuse in forecast tabs ---
-
-
+arr_raw = flexible_read_csv(f_arrivals) if f_arrivals else pd.DataFrame()
+dep_raw = flexible_read_csv(f_departures) if f_departures else pd.DataFrame()
 
 if not arr_raw.empty:
     with st.expander("Preview: Arrivals (first 20 rows)"):
@@ -260,7 +190,6 @@ LOCAL_TZ = pytz.timezone(local_tz_name)
 
 # New: day-first parsing toggle (for '01.08.2025' = 1 Aug 2025)
 dayfirst_ui = st.checkbox("Parse dates as day-first (e.g., 01.08.2025 = 1 Aug 2025)", value=True)
-daily_mov = build_daily_movements(arr_raw, dep_raw, dayfirst=dayfirst_ui)
 
 st.caption("All calculations are performed in the selected **Local timezone** (default America/Toronto).")
 
@@ -547,24 +476,9 @@ if not arr_raw.empty and not dep_raw.empty:
 
             return combined, diagnostics, summary_counts, average_counts
 
-        # --- Cache computed metrics in session_state ---
-        if "metrics" not in st.session_state:
-            st.session_state["metrics"] = {}
-        
-        metrics = st.session_state["metrics"]
-        
-        if st.button("Compute Overnights"):
-            if not airports:
-                st.error("Enter at least one airport code (e.g., CYYZ, CYUL).")
-                st.stop()
-        
-            # Compute new results and store them persistently
-            with st.spinner("Computing overnights..."):
-                new_metrics = {apt: compute_airport_metrics(apt) for apt in airports}
-                st.session_state["metrics"].update(new_metrics)
-                metrics = st.session_state["metrics"]
-        
-            st.success(f"Computed for {', '.join(airports)}!")
+        metrics = {apt: compute_airport_metrics(apt) for apt in airports}
+
+        st.success(f"Computed for {', '.join(airports)}!")
 
         st.subheader("Results")
         tabs = st.tabs([f"{apt}" for apt in airports])
