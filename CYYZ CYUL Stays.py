@@ -1,7 +1,6 @@
 # overnights_cyyz.py
 import calendar
 import io
-from collections import deque
 from datetime import datetime, timedelta, time
 from pathlib import Path
 
@@ -446,29 +445,27 @@ if not arr_raw.empty and not dep_raw.empty:
             for tail in all_tails:
                 arr_times = arr_map.get(tail, [])
                 dep_times = dep_map.get(tail, [])
-                events = [
-                    (ts, 0) for ts in arr_times
-                ] + [
-                    (ts, 1) for ts in dep_times
-                ]
-                events.sort(key=lambda x: (x[0], x[1]))
-
-                queue = deque()
+                arr_idx = 0
+                dep_idx = 0
                 own_intervals = []
-                for ts, kind in events:
-                    if kind == 0:  # arrival
-                        queue.append(ts)
-                    else:  # departure
-                        if queue and queue[0] <= ts:
-                            arr_t = queue.popleft()
-                            if ts > arr_t:
-                                own_intervals.append((arr_t, ts))
-                        # if there's no matching arrival, skip the departure
 
-                while queue:
-                    arr_t = queue.popleft()
+                while arr_idx < len(arr_times) and dep_idx < len(dep_times):
+                    arr_ts = arr_times[arr_idx]
+                    dep_ts = dep_times[dep_idx]
+
+                    if dep_ts <= arr_ts:
+                        dep_idx += 1
+                        continue
+
+                    own_intervals.append((arr_ts, dep_ts))
+                    arr_idx += 1
+                    dep_idx += 1
+
+                while arr_idx < len(arr_times):
+                    arr_t = arr_times[arr_idx]
                     if arr_t < clip_end:
                         own_intervals.append((arr_t, clip_end))
+                    arr_idx += 1
 
                 intervals_by_tail[tail] = own_intervals
 
