@@ -201,6 +201,15 @@ if f_departures:
 arr_raw = pd.concat(arr_sources, ignore_index=True) if arr_sources else pd.DataFrame()
 dep_raw = pd.concat(dep_sources, ignore_index=True) if dep_sources else pd.DataFrame()
 
+# Persist latest computation results so the Forecast tab can reuse them without rerunning
+# expensive parsing steps on every Streamlit refresh.
+if "metrics_results" not in st.session_state:
+    st.session_state["metrics_results"] = {}
+if "metrics_airports" not in st.session_state:
+    st.session_state["metrics_airports"] = []
+if "metrics_context" not in st.session_state:
+    st.session_state["metrics_context"] = {}
+
 if not arr_raw.empty:
     arr_raw = arr_raw.drop_duplicates().reset_index(drop=True)
     with st.expander("Preview combined arrivals (first 20 rows)"):
@@ -308,7 +317,14 @@ if not arr_raw.empty and not dep_raw.empty:
     )
 
     st.subheader("6) Run")
-    if st.button("Compute Overnights"):
+    compute_clicked = st.button("Compute Overnights")
+
+    metrics_to_display = {}
+    airports_to_display = []
+    context_to_display = {}
+    just_computed = False
+
+    if compute_clicked:
         if not airports:
             st.error("Enter at least one airport code (e.g., CYYZ, CYUL).")
             st.stop()
@@ -562,18 +578,71 @@ if not arr_raw.empty and not dep_raw.empty:
                         "Hours": (e - s).total_seconds() / 3600.0,
                         "Aircraft_Type": tail_type_map.get(tail, "")
                     })
-            diagnostics = pd.DataFrame(diag_rows).sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
+            diagnostics = pd.DataFrame(
+                diag_rows,
+                columns=[
+                    "Tail",
+                    "OnGround_Start_Local",
+                    "OnGround_End_Local",
+                    "Hours",
+                    "Aircraft_Type",
+                ],
+            )
+            if not diagnostics.empty:
+                diagnostics = diagnostics.sort_values(["Tail", "OnGround_Start_Local"]).reset_index(drop=True)
 
             return combined, diagnostics, summary_counts, average_counts
 
         metrics = {apt: compute_airport_metrics(apt) for apt in airports}
 
-        st.success(f"Computed for {', '.join(airports)}!")
+        context_snapshot = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "check_hour": check_hour,
+            "night_start": night_start,
+            "night_end": night_end,
+            "threshold_hours": float(threshold_hours),
+            "local_tz_name": local_tz_name,
+            "assume_from_range_start": assume_from_range_start,
+        }
+
+        st.session_state["metrics_results"] = metrics
+        st.session_state["metrics_airports"] = airports
+        st.session_state["metrics_context"] = context_snapshot
+
+        metrics_to_display = metrics
+        airports_to_display = airports
+        context_to_display = context_snapshot
+        just_computed = True
+    else:
+        metrics_to_display = st.session_state.get("metrics_results", {})
+        airports_to_display = st.session_state.get("metrics_airports", [])
+        context_to_display = st.session_state.get("metrics_context", {})
+
+    if metrics_to_display and airports_to_display:
+        context_defaults = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "check_hour": check_hour,
+            "night_start": night_start,
+            "night_end": night_end,
+            "threshold_hours": float(threshold_hours),
+            "local_tz_name": local_tz_name,
+            "assume_from_range_start": assume_from_range_start,
+        }
+        ctx = {**context_defaults, **{k: v for k, v in context_to_display.items() if v is not None}}
+
+        if just_computed:
+            st.success(f"Computed for {', '.join(airports_to_display)}!")
+        else:
+            st.info(
+                "Showing the most recent overnight calculation. Click **Compute Overnights** after changing settings to refresh."
+            )
 
         st.subheader("Results")
-        tabs = st.tabs([f"{apt}" for apt in airports])
-        for tab, apt in zip(tabs, airports):
-            combined, diagnostics, summary_counts, average_counts = metrics[apt]
+        tabs = st.tabs([f"{apt}" for apt in airports_to_display])
+        for tab, apt in zip(tabs, airports_to_display):
+            combined, diagnostics, summary_counts, average_counts = metrics_to_display[apt]
             with tab:
                 st.markdown(f"### {apt}")
                 st.dataframe(combined, use_container_width=True)
@@ -593,31 +662,33 @@ if not arr_raw.empty and not dep_raw.empty:
                     st.download_button(
                         "Download results (CSV)",
                         data=build_results_csv(combined, summary_counts, average_counts),
-                        file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
+                        file_name=f"{apt}_overnights_{ctx['start_date'].isoformat()}_{ctx['end_date'].isoformat()}_metrics.csv",
                         mime="text/csv"
                     )
                 with col_d2:
                     st.download_button(
                         "Download diagnostics (CSV)",
                         data=diagnostics.to_csv(index=False).encode("utf-8"),
-                        file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
+                        file_name=(
+                            f"{apt}_overnight_intervals_{ctx['start_date'].isoformat()}_{ctx['end_date'].isoformat()}_diagnostics.csv"
+                        ),
                         mime="text/csv"
                     )
 
         st.markdown(
             f"**Notes:**\n"
-            f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
-            f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
-            f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
-            f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
+            f"- Metric A counts a tail if still on-ground at **{ctx['check_hour'].strftime('%H:%M')} {ctx['local_tz_name']}** the following morning (night spanning the listed Date).\n"
+            f"- Metric B counts a tail if on-ground **≥ {ctx['threshold_hours']:.1f} h** within "
+            f"**{ctx['night_start'].strftime('%H:%M')}–{ctx['night_end'].strftime('%H:%M')} {ctx['local_tz_name']}** (window spans midnight if end ≤ start).\n"
+            f"- Range-start assumption is **{'ON' if ctx['assume_from_range_start'] else 'OFF'}**.\n"
             f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
             f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
         )
-else:
-    st.info(
-        "No arrivals/departures data available. Upload both CSVs or ensure the built-in"
-        " datasets are present in the `data/` folder."
-    )
+    else:
+        st.info(
+            "No arrivals/departures data available. Upload both CSVs or ensure the built-in"
+            " datasets are present in the `data/` folder."
+        )
 
 
 
@@ -630,58 +701,68 @@ if not arr_raw.empty and not dep_raw.empty:
     st.subheader("Historical Pattern Forecast")
     st.caption("Based on historical overnight counts since 2024, predict expected stays for upcoming days.")
 
-    import numpy as np
     from prophet import Prophet
     import plotly.express as px
 
-    # Let the user choose forecast length
-    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30)
-
-    # Build historical daily counts from combined results
-    all_airports = airports or ["CYYZ"]
-    hist_rows = []
-    for apt in all_airports:
-        combined, _, _, _ = metrics.get(apt, (pd.DataFrame(), None, None, None))
-        if not combined.empty:
-            tmp = combined[["Date", "Overnights_A_check"]].copy()
-            tmp["Airport"] = apt
-            hist_rows.append(tmp)
-    hist_df = pd.concat(hist_rows, ignore_index=True)
-
-    if hist_df.empty:
+    metrics_state_raw = st.session_state.get("metrics_results")
+    metrics_state = metrics_state_raw if isinstance(metrics_state_raw, dict) else {}
+    if not metrics_state:
         st.info("Run the overnight calculation first to generate historical data.")
     else:
-        # Prophet expects columns named 'ds' (date) and 'y' (value)
-        airport = st.selectbox("Select airport for forecast", all_airports)
-        df_airport = hist_df[hist_df["Airport"] == airport][["Date", "Overnights_A_check"]].rename(
-            columns={"Date": "ds", "Overnights_A_check": "y"}
-        )
-        df_airport = df_airport.groupby("ds").mean().reset_index()
+        # Let the user choose forecast length
+        forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30)
 
-        model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-        model.fit(df_airport)
-        future = model.make_future_dataframe(periods=forecast_days)
-        forecast = model.predict(future)
+        computed_airports = list(metrics_state.keys())
+        preferred_airports = [apt for apt in airports if apt in metrics_state] if airports else []
+        all_airports = preferred_airports or computed_airports
 
-        fig = px.line(
-            forecast,
-            x="ds",
-            y=["yhat", "yhat_lower", "yhat_upper"],
-            labels={"ds": "Date", "value": "Predicted Overnights"},
-            title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        hist_rows = []
+        for apt in all_airports:
+            combined, _, _, _ = metrics_state.get(apt, (pd.DataFrame(), None, None, None))
+            if not combined.empty:
+                tmp = combined[["Date", "Overnights_A_check"]].copy()
+                tmp["Airport"] = apt
+                hist_rows.append(tmp)
 
-        # Summary table
-        st.subheader("Forecast Summary")
-        st.dataframe(
-            forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
-            use_container_width=True
-        )
+        if not hist_rows:
+            st.info("No historical overnight results available. Compute metrics first.")
+        else:
+            hist_df = pd.concat(hist_rows, ignore_index=True)
 
-        st.caption(
-            "Uses a Prophet model with automatic detection of weekly and seasonal patterns. "
-            "Values are mean ± 80% confidence interval."
-        )
+            # Prophet expects columns named 'ds' (date) and 'y' (value)
+            airport = st.selectbox("Select airport for forecast", all_airports)
+            df_airport = hist_df[hist_df["Airport"] == airport][["Date", "Overnights_A_check"]].rename(
+                columns={"Date": "ds", "Overnights_A_check": "y"}
+            )
+            df_airport = df_airport.groupby("ds").mean().reset_index()
+
+            if df_airport.empty:
+                st.info("Not enough historical rows for forecasting yet. Try expanding the reporting range.")
+            else:
+                model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+                model.fit(df_airport)
+                future = model.make_future_dataframe(periods=forecast_days)
+                forecast = model.predict(future)
+
+                fig = px.line(
+                    forecast,
+                    x="ds",
+                    y=["yhat", "yhat_lower", "yhat_upper"],
+                    labels={"ds": "Date", "value": "Predicted Overnights"},
+                    title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Summary table
+                st.subheader("Forecast Summary")
+                st.dataframe(
+                    forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
+                    use_container_width=True
+                )
+
+                st.caption(
+                    "Uses a Prophet model with automatic detection of weekly and seasonal patterns. "
+                    "Values are mean ± 80% confidence interval."
+                )
 else:
     st.info("Upload data and run calculations to enable the forecast feature.")
