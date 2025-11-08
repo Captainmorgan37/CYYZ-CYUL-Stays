@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, time
 import pandas as pd
 import pytz
 import streamlit as st
+import plotly.graph_objects as go
 
 # ===============================
 # Page config & title
@@ -134,6 +135,78 @@ def build_results_csv(
     buffer.write("\n# Average counts per day (by metric)\n")
     average_counts.to_csv(buffer, index=False)
     return buffer.getvalue().encode("utf-8")
+
+
+def build_calendar_heatmap(
+    data: pd.DataFrame,
+    value_col: str,
+    title: str,
+    colorscale: str = "Blues",
+) -> go.Figure:
+    """Render a Plotly calendar-style heatmap for a series of daily values."""
+    if data.empty:
+        return go.Figure()
+
+    df = data.copy()
+    df["date"] = pd.to_datetime(df["ds"]).dt.normalize()
+    df = df[["date", value_col]].dropna()
+
+    if df.empty:
+        return go.Figure()
+
+    start = df["date"].min()
+    end = df["date"].max()
+    start_monday = start - timedelta(days=start.weekday())
+    end_sunday = end + timedelta(days=(6 - end.weekday()))
+
+    calendar_index = pd.date_range(start_monday, end_sunday, freq="D")
+    cal_df = pd.DataFrame({"date": calendar_index})
+    cal_df = cal_df.merge(df, on="date", how="left")
+    cal_df["week"] = ((cal_df["date"] - start_monday).dt.days // 7)
+    cal_df["weekday"] = cal_df["date"].dt.weekday
+    cal_df["label"] = cal_df["date"].dt.strftime("%b %d, %Y")
+
+    hover_values = cal_df[value_col].round(2).astype(str)
+    hover_values = hover_values.where(cal_df[value_col].notna(), "No data")
+    cal_df["hover"] = cal_df["label"] + "<br>" + hover_values
+
+    week_labels = (
+        cal_df.groupby("week")["date"].min().dt.strftime("%b %d")
+    )
+
+    heatmap = go.Heatmap(
+        x=cal_df["weekday"],
+        y=cal_df["week"],
+        z=cal_df[value_col],
+        text=cal_df["hover"],
+        hovertemplate="%{text}<extra></extra>",
+        xgap=1,
+        ygap=1,
+        colorscale=colorscale,
+        colorbar=dict(title=value_col.replace("_", " "))
+    )
+
+    fig = go.Figure(data=[heatmap])
+    fig.update_layout(
+        title=title,
+        xaxis=dict(
+            tickmode="array",
+            tickvals=list(range(7)),
+            ticktext=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            showgrid=False,
+            side="top",
+        ),
+        yaxis=dict(
+            tickmode="array",
+            tickvals=week_labels.index,
+            ticktext=week_labels.values,
+            autorange="reversed",
+            showgrid=False,
+        ),
+        margin=dict(l=0, r=0, t=60, b=0),
+    )
+
+    return fig
 
 
 # ===============================
@@ -604,7 +677,7 @@ if not arr_raw.empty and not dep_raw.empty:
     import plotly.express as px
 
     # Let the user choose forecast length
-    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30, 180)
+    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 180, 60, 1)
 
     # Build historical daily counts from combined results
     all_airports = cached_airports or airports or ["CYYZ"]
@@ -644,6 +717,19 @@ if not arr_raw.empty and not dep_raw.empty:
         )
         st.plotly_chart(fig, use_container_width=True)
 
+        future_forecast = forecast[forecast["ds"] > df_airport["ds"].max()].tail(forecast_days)
+        if future_forecast.empty:
+            future_forecast = forecast.tail(forecast_days)
+
+        calendar_fig = build_calendar_heatmap(
+            future_forecast[["ds", "yhat"]],
+            value_col="yhat",
+            title="Forecast calendar view",
+            colorscale="Blues",
+        )
+        if calendar_fig.data:
+            st.plotly_chart(calendar_fig, use_container_width=True)
+
         # Summary table
         st.subheader("Forecast Summary")
         st.dataframe(
@@ -675,7 +761,9 @@ if not arr_raw.empty and not dep_raw.empty:
     from prophet import Prophet
     import plotly.graph_objects as go
 
-    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30, 180, key="mov_forecast_days")
+    forecast_days = st.slider(
+        "Forecast horizon (days ahead)", 7, 180, 60, 1, key="mov_forecast_days"
+    )
 
     # --- Build daily counts ---
     arr = arr_raw.copy()
@@ -813,6 +901,20 @@ if not arr_raw.empty and not dep_raw.empty:
             hovermode="x unified",
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        last_history_date = df_train["ds"].max()
+        future_forecast = forecast[forecast["ds"] > last_history_date].tail(forecast_days)
+        if future_forecast.empty:
+            future_forecast = forecast.tail(forecast_days)
+
+        calendar_fig = build_calendar_heatmap(
+            future_forecast[["ds", "yhat"]],
+            value_col="yhat",
+            title=f"{airport} {metric} forecast — calendar view",
+            colorscale="YlGnBu",
+        )
+        if calendar_fig.data:
+            st.plotly_chart(calendar_fig, use_container_width=True)
 
         # Summary table
         st.subheader("Forecast Summary")
