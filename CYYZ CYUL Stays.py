@@ -902,8 +902,10 @@ if not arr_raw.empty and not dep_raw.empty:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        last_history_date = df_train["ds"].max()
-        future_forecast = forecast[forecast["ds"] > last_history_date].tail(forecast_days)
+        last_history_date = pd.to_datetime(df_train["ds"].max())
+        future_forecast = forecast[pd.to_datetime(forecast["ds"]) > last_history_date].tail(
+            forecast_days
+        )
         if future_forecast.empty:
             future_forecast = forecast.tail(forecast_days)
 
