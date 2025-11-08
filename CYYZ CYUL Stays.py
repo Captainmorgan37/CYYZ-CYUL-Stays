@@ -604,7 +604,7 @@ if not arr_raw.empty and not dep_raw.empty:
     import plotly.express as px
 
     # Let the user choose forecast length
-    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30)
+    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30, 180)
 
     # Build historical daily counts from combined results
     all_airports = cached_airports or airports or ["CYYZ"]
@@ -675,7 +675,7 @@ if not arr_raw.empty and not dep_raw.empty:
     from prophet import Prophet
     import plotly.graph_objects as go
 
-    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30, key="mov_forecast_days")
+    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 90, 30, 180, key="mov_forecast_days")
 
     # --- Build daily counts ---
     arr = arr_raw.copy()
