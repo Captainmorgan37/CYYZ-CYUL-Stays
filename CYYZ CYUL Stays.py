@@ -341,25 +341,14 @@ with col_b:
         st.warning("Start date is after end date. Swapping them for processing.")
         start_date, end_date = end_date, start_date
 
-col_tz1, col_tz2 = st.columns(2)
-with col_tz1:
-    ts_source_tz = st.selectbox(
-        "Timestamps in files are:",
-        ["UTC (recommended)", "Local (choose zone below)"],
-        index=0
-    )
-with col_tz2:
-    local_tz_name = st.selectbox(
-        "Local timezone (for calculations & display)",
-        ["America/Toronto", "America/Edmonton", "UTC"] + sorted(pytz.all_timezones),
-        index=0
-    )
+local_tz_name = "America/Toronto"
 LOCAL_TZ = pytz.timezone(local_tz_name)
+DAYFIRST = True
 
-# New: day-first parsing toggle (for '01.08.2025' = 1 Aug 2025)
-dayfirst_ui = st.checkbox("Parse dates as day-first (e.g., 01.08.2025 = 1 Aug 2025)", value=True)
-
-st.caption("All calculations are performed in the selected **Local timezone** (default America/Toronto).")
+st.caption(
+    "Timestamps are assumed to be in UTC and converted to **America/Toronto** "
+    "(day-first parsing enabled for dates like 01.08.2025)."
+)
 
 # Column mapping UI
 if not arr_raw.empty and not dep_raw.empty:
@@ -394,30 +383,15 @@ if not arr_raw.empty and not dep_raw.empty:
         dep_type_col = st.selectbox("Departures: Aircraft type (optional)", dep_type_options, index=dep_type_idx)
 
     st.subheader("4) Overnight Definitions")
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        check_hour = st.time_input("Metric A — On ground at (local time)", value=time(3, 0))
-    with col_m2:
-        night_start = st.time_input("Metric B — Night window start (local)", value=time(20, 0))
-        night_end = st.time_input("Metric B — Night window end (local, next day)", value=time(6, 0))
-    threshold_hours = st.slider("Metric B — Minimum on-ground within night window (hours)", 0.0, 12.0, 5.0, 0.5)
+    check_hour = st.time_input("Metric A — On ground at (local time)", value=time(3, 0))
 
-    st.subheader("5) Pairing Options")
-    assume_from_range_start = st.checkbox(
-        "Assume a tail with departures but no earlier arrivals in this range was already on-ground from range start",
-        value=False,
-        help="Enable if you want to count aircraft that only show up as departures (or whose first arrival is later in the range) as being present from the start of the reporting range."
-    )
-
-    st.subheader("6) Run")
+    st.subheader("5) Run")
 
     current_signature = (
         tuple(airports),
         start_date,
         end_date,
-        ts_source_tz,
         local_tz_name,
-        dayfirst_ui,
         tail_arr,
         arr_to_col,
         arr_time_col,
@@ -427,10 +401,6 @@ if not arr_raw.empty and not dep_raw.empty:
         dep_time_col,
         dep_type_col,
         check_hour.isoformat(),
-        night_start.isoformat(),
-        night_end.isoformat(),
-        float(threshold_hours),
-        assume_from_range_start,
         df_signature(arr_raw),
         df_signature(dep_raw),
     )
@@ -456,12 +426,8 @@ if not arr_raw.empty and not dep_raw.empty:
         dep["airport_origin"] = dep[dep_from_col].astype(str).str.strip().str.upper()
 
         # Parse timestamps from source tz to LOCAL_TZ
-        if ts_source_tz.startswith("UTC"):
-            arr["arr_dt"] = parse_flexible_utc_to_local(arr[arr_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
-            dep["dep_dt"] = parse_flexible_utc_to_local(dep[dep_time_col], LOCAL_TZ, dayfirst=dayfirst_ui)
-        else:
-            arr["arr_dt"] = localize_naive(arr[arr_time_col], LOCAL_TZ)
-            dep["dep_dt"] = localize_naive(dep[dep_time_col], LOCAL_TZ)
+        arr["arr_dt"] = parse_flexible_utc_to_local(arr[arr_time_col], LOCAL_TZ, dayfirst=DAYFIRST)
+        dep["dep_dt"] = parse_flexible_utc_to_local(dep[dep_time_col], LOCAL_TZ, dayfirst=DAYFIRST)
 
         # Sanity check BEFORE range filter
         all_parsed = pd.concat([arr["arr_dt"].dropna(), dep["dep_dt"].dropna()])
@@ -472,7 +438,7 @@ if not arr_raw.empty and not dep_raw.empty:
             if range_hits < 0.2:
                 st.warning(
                     "Heads up: Most parsed timestamps are NOT in the chosen reporting range. "
-                    "This usually means the date format (day-first) toggle is wrong or the files cover different dates."
+                    "This usually means the files cover different dates or use unexpected formats."
                 )
 
         # Normalize tail
@@ -497,23 +463,14 @@ if not arr_raw.empty and not dep_raw.empty:
         end_local = LOCAL_TZ.localize(datetime.combine(end_date, time(23, 59, 59)))
 
         # We need to retain enough timeline past the reporting range end so that
-        # checks that occur in the following morning (Metric A) or night
-        # windows that cross midnight (Metric B) still see the aircraft as
+        # checks that occur in the following morning (Metric A) still see the aircraft as
         # present. Otherwise the last day of the reporting range would always
         # appear empty because the intervals get clipped at 23:59:59.
         last_date = end_local.date()
         check_dt_last = LOCAL_TZ.localize(
             datetime(last_date.year, last_date.month, last_date.day, check_hour.hour, check_hour.minute)
         ) + timedelta(days=1)
-        if night_end <= night_start:
-            last_window_end = LOCAL_TZ.localize(
-                datetime(last_date.year, last_date.month, last_date.day, night_end.hour, night_end.minute)
-            ) + timedelta(days=1)
-        else:
-            last_window_end = LOCAL_TZ.localize(
-                datetime(last_date.year, last_date.month, last_date.day, night_end.hour, night_end.minute)
-            )
-        clip_end = max(end_local, check_dt_last, last_window_end)
+        clip_end = max(end_local, check_dt_last)
 
         def compute_airport_metrics(airport_code: str):
             arr_filtered = arr[arr["airport_dest"] == airport_code].copy()
@@ -565,15 +522,6 @@ if not arr_raw.empty and not dep_raw.empty:
 
                 intervals_by_tail[tail] = own_intervals
 
-            if assume_from_range_start:
-                first_arrivals = {tail: min(times) if times else pd.NaT for tail, times in arr_map.items()}
-                for tail, dep_times in dep_map.items():
-                    first_dep = min(dep_times) if dep_times else pd.NaT
-                    first_arr = first_arrivals.get(tail, pd.NaT)
-                    if pd.notna(first_dep) and first_dep > start_local:
-                        if pd.isna(first_arr) or first_arr > first_dep:
-                            intervals_by_tail.setdefault(tail, []).append((start_local, first_dep))
-
             for tail, ivls in list(intervals_by_tail.items()):
                 clipped = []
                 for s, e in ivls:
@@ -603,54 +551,15 @@ if not arr_raw.empty and not dep_raw.empty:
                 })
             df_A = pd.DataFrame(rows_A)
 
-            rows_B = []
-            for d in dates:
-                win_start = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_start.hour, night_start.minute))
-                if night_end <= night_start:
-                    win_end = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_end.hour, night_end.minute)) + timedelta(days=1)
-                else:
-                    win_end = LOCAL_TZ.localize(datetime(d.year, d.month, d.day, night_end.hour, night_end.minute))
+            combined = df_A.sort_values("Date").reset_index(drop=True)
 
-                present_B = []
-                for tail, ivls in intervals_by_tail.items():
-                    total = timedelta(0)
-                    for s, e in ivls:
-                        total += overlap(s, e, win_start, win_end)
-                        if total >= timedelta(hours=float(threshold_hours)):
-                            present_B.append(tail)
-                            break
-                present_B = sorted(present_B)
-                emb_tails_b = sorted([t for t in present_B if classify_aircraft_type(tail_type_map.get(t, "")) == "embraer"])
-                cj_tails_b = sorted([t for t in present_B if classify_aircraft_type(tail_type_map.get(t, "")) == "cj"])
-                rows_B.append({
-                    "Date": pd.to_datetime(d),
-                    "Overnights_B_nightwindow": len(present_B),
-                    "Tails_B": ", ".join(present_B),
-                    "Embraer_B_Count": len(emb_tails_b),
-                    "Embraer_B_Tails": ", ".join(emb_tails_b),
-                    "CJ_B_Count": len(cj_tails_b),
-                    "CJ_B_Tails": ", ".join(cj_tails_b),
-                })
-            df_B = pd.DataFrame(rows_B)
-
-            combined = df_A.merge(df_B, on="Date", how="outer").sort_values("Date").reset_index(drop=True)
-            combined["Delta_B_minus_A"] = combined["Overnights_B_nightwindow"] - combined["Overnights_A_check"]
-
-            summary_A = combined[["Date", "Overnights_A_check", "Embraer_A_Count", "CJ_A_Count"]].rename(columns={
+            summary_counts = combined[["Date", "Overnights_A_check", "Embraer_A_Count", "CJ_A_Count"]].rename(columns={
                 "Overnights_A_check": "Total_Tails",
                 "Embraer_A_Count": "Embraer_Count",
                 "CJ_A_Count": "CJ_Count",
             })
-            summary_A["Metric"] = "Metric A"
-            summary_B = combined[["Date", "Overnights_B_nightwindow", "Embraer_B_Count", "CJ_B_Count"]].rename(columns={
-                "Overnights_B_nightwindow": "Total_Tails",
-                "Embraer_B_Count": "Embraer_Count",
-                "CJ_B_Count": "CJ_Count",
-            })
-            summary_B["Metric"] = "Metric B"
-            summary_counts = pd.concat([summary_A, summary_B], ignore_index=True)[
-                ["Date", "Metric", "Total_Tails", "Embraer_Count", "CJ_Count"]
-            ]
+            summary_counts["Metric"] = "Metric A"
+            summary_counts = summary_counts[["Date", "Metric", "Total_Tails", "Embraer_Count", "CJ_Count"]]
 
             average_counts = summary_counts.groupby("Metric")[
                 ["Total_Tails", "Embraer_Count", "CJ_Count"]
@@ -704,7 +613,7 @@ if not arr_raw.empty and not dep_raw.empty:
                 st.subheader("Daily summary by aircraft category")
                 st.dataframe(summary_counts, use_container_width=True)
 
-                st.subheader("Average aircraft counts per day (by metric)")
+                st.subheader("Average aircraft counts per day")
                 st.dataframe(average_counts, use_container_width=True)
 
                 st.subheader("Diagnostics (on-ground intervals per tail)")
@@ -730,11 +639,8 @@ if not arr_raw.empty and not dep_raw.empty:
         st.markdown(
             f"**Notes:**\n"
             f"- Metric A counts a tail if still on-ground at **{check_hour.strftime('%H:%M')} {local_tz_name}** the following morning (night spanning the listed Date).\n"
-            f"- Metric B counts a tail if on-ground **≥ {float(threshold_hours):.1f} h** within "
-            f"**{night_start.strftime('%H:%M')}–{night_end.strftime('%H:%M')} {local_tz_name}** (window spans midnight if end ≤ start).\n"
-            f"- Range-start assumption is **{'ON' if assume_from_range_start else 'OFF'}**.\n"
             f"- Arrivals/departures just outside the reporting range are automatically considered for pairing, so include surrounding days in the uploads for best accuracy.\n"
-            f"- If results look empty for the first week, double-check the **day-first** toggle and that files cover the chosen reporting range.\n"
+            f"- If results look empty for the first week, confirm the uploads cover the chosen reporting range and use the expected date formats.\n"
         )
 else:
     st.info("Upload both CSVs to configure column mapping and run the calculation.")
@@ -857,8 +763,8 @@ if not arr_raw.empty and not dep_raw.empty:
     arr_apt_col = pick_col(arr.columns, ["To (ICAO)", "Destination", "To"])
     dep_apt_col = pick_col(dep.columns, ["From (ICAO)", "Origin", "From"])
 
-    arr["date"] = pd.to_datetime(arr[arr_time_col], errors="coerce", dayfirst=dayfirst_ui).dt.date
-    dep["date"] = pd.to_datetime(dep[dep_time_col], errors="coerce", dayfirst=dayfirst_ui).dt.date
+    arr["date"] = pd.to_datetime(arr[arr_time_col], errors="coerce", dayfirst=DAYFIRST).dt.date
+    dep["date"] = pd.to_datetime(dep[dep_time_col], errors="coerce", dayfirst=DAYFIRST).dt.date
     arr[arr_apt_col] = arr[arr_apt_col].astype(str).str.upper().str.strip()
     dep[dep_apt_col] = dep[dep_apt_col].astype(str).str.upper().str.strip()
 
