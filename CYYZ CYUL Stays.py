@@ -137,76 +137,159 @@ def build_results_csv(
     return buffer.getvalue().encode("utf-8")
 
 
-def build_calendar_heatmap(
+def render_monthly_calendar_view(
     data: pd.DataFrame,
     value_col: str,
     title: str,
-    colorscale: str = "Blues",
-) -> go.Figure:
-    """Render a Plotly calendar-style heatmap for a series of daily values."""
+    key_prefix: str,
+    value_label: str | None = None,
+    value_formatter=None,
+) -> bool:
+    """Render a navigable monthly calendar with daily values inside Streamlit."""
+
     if data.empty:
-        return go.Figure()
+        return False
 
     df = data.copy()
-    df["date"] = pd.to_datetime(df["ds"]).dt.normalize()
-    df = df[["date", value_col]].dropna()
+    df["date"] = pd.to_datetime(df["ds"], errors="coerce").dt.date
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    df = df.dropna(subset=["date", value_col])
 
     if df.empty:
-        return go.Figure()
+        return False
 
-    start = df["date"].min()
-    end = df["date"].max()
-    start_monday = start - timedelta(days=start.weekday())
-    end_sunday = end + timedelta(days=(6 - end.weekday()))
+    df = df.groupby("date", as_index=False)[value_col].mean()
 
-    calendar_index = pd.date_range(start_monday, end_sunday, freq="D")
-    cal_df = pd.DataFrame({"date": calendar_index})
-    cal_df = cal_df.merge(df, on="date", how="left")
-    cal_df["week"] = ((cal_df["date"] - start_monday).dt.days // 7)
-    cal_df["weekday"] = cal_df["date"].dt.weekday
-    cal_df["label"] = cal_df["date"].dt.strftime("%b %d, %Y")
+    month_options = sorted({d.replace(day=1) for d in df["date"]})
+    if not month_options:
+        return False
 
-    hover_values = cal_df[value_col].round(2).astype(str)
-    hover_values = hover_values.where(cal_df[value_col].notna(), "No data")
-    cal_df["hover"] = cal_df["label"] + "<br>" + hover_values
+    style_key = "_monthly_calendar_style"
+    if not st.session_state.get(style_key):
+        st.markdown(
+            """
+            <style>
+            .calendar-wrapper {margin-top: 0.5rem;}
+            .calendar-month-label {text-align: center; font-weight: 700; font-size: 1.2rem; padding-top: 0.25rem;}
+            .calendar-table {width: 100%; border-collapse: collapse; table-layout: fixed; border-radius: 0.65rem; overflow: hidden; border: 1px solid #e0e0e0;}
+            .calendar-table thead {background: #f6f6f6;}
+            .calendar-table th {padding: 0.6rem 0.2rem; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: #555;}
+            .calendar-table td {border: 1px solid #e9ecef; height: 5.2rem; vertical-align: top; padding: 0.35rem; position: relative; background: #ffffff;}
+            .calendar-day {border: 1px solid #e9ecef;}
+            .calendar-day .calendar-date {font-size: 0.9rem; font-weight: 600;}
+            .calendar-day .calendar-value {font-size: 1.05rem; font-weight: 600; margin-top: 0.35rem;}
+            .calendar-day.other-month {background: #fafafa; color: #b5b5b5;}
+            .calendar-legend {font-size: 0.8rem; color: #6c757d; margin-top: 0.3rem;}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.session_state[style_key] = True
 
-    week_labels = (
-        cal_df.groupby("week")["date"].min().dt.strftime("%b %d")
+    safe_prefix = "".join(c if c.isalnum() or c in "_-" else "_" for c in key_prefix)
+
+    state_key = f"{safe_prefix}_month_index"
+    idx = st.session_state.get(state_key, 0)
+    idx = max(0, min(idx, len(month_options) - 1))
+    st.session_state[state_key] = idx
+
+    st.subheader(title)
+    nav_cols = st.columns([1, 2, 1])
+    with nav_cols[0]:
+        prev_clicked = st.button("◀", key=f"{safe_prefix}_prev", disabled=idx == 0)
+    month_placeholder = nav_cols[1].empty()
+    with nav_cols[2]:
+        next_clicked = st.button("▶", key=f"{safe_prefix}_next", disabled=idx == len(month_options) - 1)
+
+    if prev_clicked and idx > 0:
+        idx -= 1
+        st.session_state[state_key] = idx
+    if next_clicked and idx < len(month_options) - 1:
+        idx += 1
+        st.session_state[state_key] = idx
+
+    selected_month = month_options[idx]
+    month_placeholder.markdown(
+        f"<div class='calendar-month-label'>{selected_month.strftime('%B %Y')}</div>",
+        unsafe_allow_html=True,
     )
 
-    heatmap = go.Heatmap(
-        x=cal_df["weekday"],
-        y=cal_df["week"],
-        z=cal_df[value_col],
-        text=cal_df["hover"],
-        hovertemplate="%{text}<extra></extra>",
-        xgap=1,
-        ygap=1,
-        colorscale=colorscale,
-        colorbar=dict(title=value_col.replace("_", " "))
+    cal = calendar.Calendar(firstweekday=6)
+    weeks = cal.monthdatescalendar(selected_month.year, selected_month.month)
+
+    value_map = {row.date: getattr(row, value_col) for row in df.itertuples()}
+    month_values = []
+    for week in weeks:
+        for day in week:
+            if day.month != selected_month.month:
+                continue
+            val = value_map.get(day)
+            if val is not None:
+                month_values.append(val)
+
+    min_val = min(month_values) if month_values else None
+    max_val = max(month_values) if month_values else None
+
+    def default_formatter(val):
+        if val is None:
+            return ""
+        if abs(val - round(val)) < 0.01:
+            return f"{int(round(val))}"
+        return f"{val:.1f}"
+
+    fmt = value_formatter or default_formatter
+
+    def cell_style(val):
+        if val is None or min_val is None or max_val is None:
+            return ""
+        if max_val == min_val:
+            alpha = 0.65
+        else:
+            alpha = 0.2 + 0.6 * (val - min_val) / (max_val - min_val)
+        alpha = max(0.15, min(alpha, 0.85))
+        text_color = "#0d1b2a" if alpha < 0.55 else "#ffffff"
+        return f"background-color: rgba(33, 150, 243, {alpha}); color: {text_color};"
+
+    headers = "".join(
+        f"<th>{day}</th>" for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     )
 
-    fig = go.Figure(data=[heatmap])
-    fig.update_layout(
-        title=title,
-        xaxis=dict(
-            tickmode="array",
-            tickvals=list(range(7)),
-            ticktext=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-            showgrid=False,
-            side="top",
-        ),
-        yaxis=dict(
-            tickmode="array",
-            tickvals=week_labels.index,
-            ticktext=week_labels.values,
-            autorange="reversed",
-            showgrid=False,
-        ),
-        margin=dict(l=0, r=0, t=60, b=0),
+    rows_html = []
+    for week in weeks:
+        cells = []
+        for day in week:
+            val = value_map.get(day)
+            classes = ["calendar-day"]
+            style = ""
+            value_html = ""
+            if day.month != selected_month.month:
+                classes.append("other-month")
+            else:
+                style = cell_style(val)
+                value_html = f"<div class='calendar-value'>{fmt(val)}</div>"
+            cells.append(
+                "<td class='{}' style='{}'>".format(" ".join(classes), style)
+                + f"<div class='calendar-date'>{day.day}</div>"
+                + value_html
+                + "</td>"
+            )
+        rows_html.append(f"<tr>{''.join(cells)}</tr>")
+
+    table_html = (
+        "<div class='calendar-wrapper'>"
+        "<table class='calendar-table'>"
+        f"<thead><tr>{headers}</tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody>"
+        "</table>"
+        "</div>"
     )
 
-    return fig
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    if value_label:
+        st.caption(f"Daily values show {value_label}.")
+
+    return True
 
 
 # ===============================
@@ -721,14 +804,13 @@ if not arr_raw.empty and not dep_raw.empty:
         if future_forecast.empty:
             future_forecast = forecast.tail(forecast_days)
 
-        calendar_fig = build_calendar_heatmap(
+        render_monthly_calendar_view(
             future_forecast[["ds", "yhat"]],
             value_col="yhat",
             title="Forecast calendar view",
-            colorscale="Blues",
+            key_prefix=f"forecast_calendar_{airport}",
+            value_label="predicted overnights",
         )
-        if calendar_fig.data:
-            st.plotly_chart(calendar_fig, use_container_width=True)
 
         # Summary table
         st.subheader("Forecast Summary")
@@ -909,14 +991,13 @@ if not arr_raw.empty and not dep_raw.empty:
         if future_forecast.empty:
             future_forecast = forecast.tail(forecast_days)
 
-        calendar_fig = build_calendar_heatmap(
+        render_monthly_calendar_view(
             future_forecast[["ds", "yhat"]],
             value_col="yhat",
             title=f"{airport} {metric} forecast — calendar view",
-            colorscale="YlGnBu",
+            key_prefix=f"movement_calendar_{airport}_{metric}",
+            value_label=f"predicted {metric.replace('_', ' ').lower()}",
         )
-        if calendar_fig.data:
-            st.plotly_chart(calendar_fig, use_container_width=True)
 
         # Summary table
         st.subheader("Forecast Summary")
