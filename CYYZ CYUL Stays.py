@@ -350,42 +350,38 @@ st.caption(
     "(day-first parsing enabled for dates like 01.08.2025)."
 )
 
-# Column mapping UI
 if not arr_raw.empty and not dep_raw.empty:
-    st.subheader("3) Column Mapping")
     arr_cols = list(arr_raw.columns)
     dep_cols = list(dep_raw.columns)
 
-    # Sensible defaults (prefer Actual)
-    default_arr_tail = pick_col(arr_cols, ["Aircraft", "Tail", "Registration", "A/C"])
-    default_dep_tail = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
-    default_to = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
-    default_from = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
-    default_arr_time = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
-    default_dep_time = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
-    default_arr_type = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
-    default_dep_type = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
+    # Sensible defaults (prefer Actual) using automatic detection
+    tail_arr = pick_col(arr_cols, ["Aircraft", "Tail", "Registration", "A/C"])
+    tail_dep = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
+    arr_to_col = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
+    dep_from_col = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
+    arr_time_col = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
+    dep_time_col = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
+    arr_type_col = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
+    dep_type_col = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
 
-    c1, c2 = st.columns(2)
-    with c1:
-        tail_arr = st.selectbox("Arrivals: Tail/Registration", arr_cols, index=arr_cols.index(default_arr_tail) if default_arr_tail in arr_cols else 0)
-        arr_to_col = st.selectbox("Arrivals: To (ICAO)", arr_cols, index=arr_cols.index(default_to) if default_to in arr_cols else 0)
-        arr_time_col = st.selectbox("Arrivals: Arrival time", arr_cols, index=arr_cols.index(default_arr_time) if default_arr_time in arr_cols else 0)
-        arr_type_options = ["<None>"] + arr_cols
-        arr_type_idx = arr_type_options.index(default_arr_type) if default_arr_type in arr_cols else 0
-        arr_type_col = st.selectbox("Arrivals: Aircraft type (optional)", arr_type_options, index=arr_type_idx)
-    with c2:
-        tail_dep = st.selectbox("Departures: Tail/Registration", dep_cols, index=dep_cols.index(default_dep_tail) if default_dep_tail in dep_cols else 0)
-        dep_from_col = st.selectbox("Departures: From (ICAO)", dep_cols, index=dep_cols.index(default_from) if default_from in dep_cols else 0)
-        dep_time_col = st.selectbox("Departures: Departure time", dep_cols, index=dep_cols.index(default_dep_time) if default_dep_time in dep_cols else 0)
-        dep_type_options = ["<None>"] + dep_cols
-        dep_type_idx = dep_type_options.index(default_dep_type) if default_dep_type in dep_cols else 0
-        dep_type_col = st.selectbox("Departures: Aircraft type (optional)", dep_type_options, index=dep_type_idx)
+    with st.expander("Detected column mapping", expanded=False):
+        mapping_rows = [
+            ("Arrivals", "Tail/Registration", tail_arr),
+            ("Arrivals", "To (ICAO)", arr_to_col),
+            ("Arrivals", "Arrival time", arr_time_col),
+            ("Arrivals", "Aircraft type", arr_type_col or "<None detected>"),
+            ("Departures", "Tail/Registration", tail_dep),
+            ("Departures", "From (ICAO)", dep_from_col),
+            ("Departures", "Departure time", dep_time_col),
+            ("Departures", "Aircraft type", dep_type_col or "<None detected>"),
+        ]
+        mapping_df = pd.DataFrame(mapping_rows, columns=["File", "Field", "Detected Column"])
+        st.dataframe(mapping_df, hide_index=True, use_container_width=True)
 
-    st.subheader("4) Overnight Definitions")
+    st.subheader("3) Overnight Definitions")
     check_hour = st.time_input("Metric A — On ground at (local time)", value=time(3, 0))
 
-    st.subheader("5) Run")
+    st.subheader("4) Run")
 
     current_signature = (
         tuple(airports),
@@ -395,11 +391,11 @@ if not arr_raw.empty and not dep_raw.empty:
         tail_arr,
         arr_to_col,
         arr_time_col,
-        arr_type_col,
+        arr_type_col or "",
         tail_dep,
         dep_from_col,
         dep_time_col,
-        dep_type_col,
+        dep_type_col or "",
         check_hour.isoformat(),
         df_signature(arr_raw),
         df_signature(dep_raw),
@@ -414,6 +410,23 @@ if not arr_raw.empty and not dep_raw.empty:
     if run_compute:
         if not airports:
             st.error("Enter at least one airport code (e.g., CYYZ, CYUL).")
+            st.stop()
+
+        required_columns = {
+            "Arrivals: Tail/Registration": tail_arr,
+            "Arrivals: To (ICAO)": arr_to_col,
+            "Arrivals: Arrival time": arr_time_col,
+            "Departures: Tail/Registration": tail_dep,
+            "Departures: From (ICAO)": dep_from_col,
+            "Departures: Departure time": dep_time_col,
+        }
+        missing_required = [label for label, col in required_columns.items() if not col]
+        if missing_required:
+            st.error(
+                "Could not auto-detect the following required columns: "
+                + ", ".join(missing_required)
+                + ". Please check the uploaded CSV files."
+            )
             st.stop()
 
         # ===============================
@@ -445,11 +458,11 @@ if not arr_raw.empty and not dep_raw.empty:
         arr["tail"] = arr[tail_arr].astype(str).str.strip().str.upper()
         dep["tail"] = dep[tail_dep].astype(str).str.strip().str.upper()
 
-        if arr_type_col != "<None>":
+        if arr_type_col:
             arr["aircraft_type"] = arr[arr_type_col].astype(str).str.strip().str.upper()
         else:
             arr["aircraft_type"] = ""
-        if dep_type_col != "<None>":
+        if dep_type_col:
             dep["aircraft_type"] = dep[dep_type_col].astype(str).str.strip().str.upper()
         else:
             dep["aircraft_type"] = ""
