@@ -172,7 +172,7 @@ def render_monthly_calendar_view(
             <style>
             .calendar-wrapper {margin-top: 0.5rem;}
             .calendar-month-label {text-align: center; font-weight: 700; font-size: 1.2rem; padding-top: 0.25rem;}
-            .calendar-grid {display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; align-items: start;}
+            .calendar-grid {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; align-items: start;}
             .calendar-card {background: #ffffff08; padding: 0.5rem; border-radius: 0.75rem; border: 1px solid #e0e0e0; box-shadow: 0 1px 3px rgba(0,0,0,0.05);}
             .calendar-table {width: 100%; border-collapse: collapse; table-layout: fixed; border-radius: 0.65rem; overflow: hidden; border: 1px solid #e0e0e0;}
             .calendar-table thead {background: #f6f6f6;}
@@ -300,8 +300,9 @@ def render_monthly_calendar_view(
         )
         month_tables.append(table_html)
 
+    grid_template = f"repeat({months_per_view}, minmax(220px, 1fr))"
     st.markdown(
-        "<div class='calendar-grid'>" + "".join(month_tables) + "</div>",
+        f"<div class='calendar-grid' style=\"grid-template-columns: {grid_template};\">" + "".join(month_tables) + "</div>",
         unsafe_allow_html=True,
     )
 
