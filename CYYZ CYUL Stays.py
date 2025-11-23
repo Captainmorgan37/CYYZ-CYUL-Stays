@@ -144,6 +144,7 @@ def render_monthly_calendar_view(
     key_prefix: str,
     value_label: str | None = None,
     value_formatter=None,
+    months_per_view: int = 1,
 ) -> bool:
     """Render a navigable monthly calendar with daily values inside Streamlit."""
 
@@ -171,6 +172,8 @@ def render_monthly_calendar_view(
             <style>
             .calendar-wrapper {margin-top: 0.5rem;}
             .calendar-month-label {text-align: center; font-weight: 700; font-size: 1.2rem; padding-top: 0.25rem;}
+            .calendar-grid {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; align-items: start;}
+            .calendar-card {background: #ffffff08; padding: 0.5rem; border-radius: 0.75rem; border: 1px solid #e0e0e0; box-shadow: 0 1px 3px rgba(0,0,0,0.05);}
             .calendar-table {width: 100%; border-collapse: collapse; table-layout: fixed; border-radius: 0.65rem; overflow: hidden; border: 1px solid #e0e0e0;}
             .calendar-table thead {background: #f6f6f6;}
             .calendar-table th {padding: 0.6rem 0.2rem; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: #555;}
@@ -188,44 +191,51 @@ def render_monthly_calendar_view(
 
     safe_prefix = "".join(c if c.isalnum() or c in "_-" else "_" for c in key_prefix)
 
+    months_per_view = max(1, int(months_per_view))
+    max_start_idx = max(0, len(month_options) - months_per_view)
+
     state_key = f"{safe_prefix}_month_index"
     idx = st.session_state.get(state_key, 0)
-    idx = max(0, min(idx, len(month_options) - 1))
+    idx = max(0, min(idx, max_start_idx))
     st.session_state[state_key] = idx
 
     st.subheader(title)
-    nav_cols = st.columns([1, 2, 1])
+    nav_cols = st.columns([1, 3, 1])
     with nav_cols[0]:
         prev_clicked = st.button("◀", key=f"{safe_prefix}_prev", disabled=idx == 0)
     month_placeholder = nav_cols[1].empty()
     with nav_cols[2]:
-        next_clicked = st.button("▶", key=f"{safe_prefix}_next", disabled=idx == len(month_options) - 1)
+        next_clicked = st.button("▶", key=f"{safe_prefix}_next", disabled=idx >= max_start_idx)
 
     if prev_clicked and idx > 0:
-        idx -= 1
+        idx = max(0, idx - months_per_view)
         st.session_state[state_key] = idx
-    if next_clicked and idx < len(month_options) - 1:
-        idx += 1
+    if next_clicked and idx < max_start_idx:
+        idx = min(max_start_idx, idx + months_per_view)
         st.session_state[state_key] = idx
 
-    selected_month = month_options[idx]
-    month_placeholder.markdown(
-        f"<div class='calendar-month-label'>{selected_month.strftime('%B %Y')}</div>",
-        unsafe_allow_html=True,
-    )
+    displayed_months = month_options[idx : idx + months_per_view]
+    first_label = displayed_months[0].strftime("%B %Y")
+    last_label = displayed_months[-1].strftime("%B %Y")
+    label = first_label if first_label == last_label else f"{first_label} – {last_label}"
+    month_placeholder.markdown(f"<div class='calendar-month-label'>{label}</div>", unsafe_allow_html=True)
 
     cal = calendar.Calendar(firstweekday=6)
-    weeks = cal.monthdatescalendar(selected_month.year, selected_month.month)
+    month_weeks = {
+        m: cal.monthdatescalendar(m.year, m.month)
+        for m in displayed_months
+    }
 
     value_map = {row.date: getattr(row, value_col) for row in df.itertuples()}
     month_values = []
-    for week in weeks:
-        for day in week:
-            if day.month != selected_month.month:
-                continue
-            val = value_map.get(day)
-            if val is not None:
-                month_values.append(val)
+    for m, weeks in month_weeks.items():
+        for week in weeks:
+            for day in week:
+                if day.month != m.month:
+                    continue
+                val = value_map.get(day)
+                if val is not None:
+                    month_values.append(val)
 
     min_val = min(month_values) if month_values else None
     max_val = max(month_values) if month_values else None
@@ -254,37 +264,47 @@ def render_monthly_calendar_view(
         f"<th>{day}</th>" for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     )
 
-    rows_html = []
-    for week in weeks:
-        cells = []
-        for day in week:
-            val = value_map.get(day)
-            classes = ["calendar-day"]
-            style = ""
-            value_html = ""
-            if day.month != selected_month.month:
-                classes.append("other-month")
-            else:
-                style = cell_style(val)
-                value_html = f"<div class='calendar-value'>{fmt(val)}</div>"
-            cells.append(
-                "<td class='{}' style='{}'>".format(" ".join(classes), style)
-                + f"<div class='calendar-date'>{day.day}</div>"
-                + value_html
-                + "</td>"
-            )
-        rows_html.append(f"<tr>{''.join(cells)}</tr>")
+    month_tables = []
+    for m, weeks in month_weeks.items():
+        rows_html = []
+        for week in weeks:
+            cells = []
+            for day in week:
+                val = value_map.get(day)
+                classes = ["calendar-day"]
+                style = ""
+                value_html = ""
+                if day.month != m.month:
+                    classes.append("other-month")
+                else:
+                    style = cell_style(val)
+                    value_html = f"<div class='calendar-value'>{fmt(val)}</div>"
+                cells.append(
+                    "<td class='{}' style='{}'>".format(" ".join(classes), style)
+                    + f"<div class='calendar-date'>{day.day}</div>"
+                    + value_html
+                    + "</td>"
+                )
+            rows_html.append(f"<tr>{''.join(cells)}</tr>")
 
-    table_html = (
-        "<div class='calendar-wrapper'>"
-        "<table class='calendar-table'>"
-        f"<thead><tr>{headers}</tr></thead>"
-        f"<tbody>{''.join(rows_html)}</tbody>"
-        "</table>"
-        "</div>"
+        table_html = (
+            "<div class='calendar-card'>"
+            f"<div class='calendar-month-label'>{m.strftime('%B %Y')}</div>"
+            "<div class='calendar-wrapper'>"
+            "<table class='calendar-table'>"
+            f"<thead><tr>{headers}</tr></thead>"
+            f"<tbody>{''.join(rows_html)}</tbody>"
+            "</table>"
+            "</div>"
+            "</div>"
+        )
+        month_tables.append(table_html)
+
+    grid_template = f"repeat({months_per_view}, minmax(220px, 1fr))"
+    st.markdown(
+        f"<div class='calendar-grid' style=\"grid-template-columns: {grid_template};\">" + "".join(month_tables) + "</div>",
+        unsafe_allow_html=True,
     )
-
-    st.markdown(table_html, unsafe_allow_html=True)
 
     if value_label:
         st.caption(f"Daily values show {value_label}.")
@@ -723,12 +743,22 @@ if not arr_raw.empty and not dep_raw.empty:
         if future_forecast.empty:
             future_forecast = forecast.tail(forecast_days)
 
+        calendar_metric = st.radio(
+            "Calendar values",
+            ["Mean (yhat)", "Upper limit (yhat_upper)"],
+            horizontal=True,
+            key=f"forecast_calendar_toggle_{airport}",
+        )
+        calendar_column = "yhat" if calendar_metric.startswith("Mean") else "yhat_upper"
+        calendar_label = "predicted mean overnights" if calendar_column == "yhat" else "upper bound overnights"
+
         render_monthly_calendar_view(
-            future_forecast[["ds", "yhat"]],
-            value_col="yhat",
+            future_forecast[["ds", "yhat", "yhat_upper"]],
+            value_col=calendar_column,
             title="Forecast calendar view",
             key_prefix=f"forecast_calendar_{airport}",
-            value_label="predicted overnights",
+            value_label=calendar_label,
+            months_per_view=3,
         )
 
         # Summary table
@@ -910,12 +940,26 @@ if not arr_raw.empty and not dep_raw.empty:
         if future_forecast.empty:
             future_forecast = forecast.tail(forecast_days)
 
+        movement_calendar_metric = st.radio(
+            "Calendar values",
+            ["Mean (yhat)", "Upper limit (yhat_upper)"],
+            horizontal=True,
+            key=f"movement_calendar_toggle_{airport}_{metric}",
+        )
+        movement_calendar_column = (
+            "yhat" if movement_calendar_metric.startswith("Mean") else "yhat_upper"
+        )
+        movement_calendar_label = (
+            f"predicted {metric.replace('_', ' ').lower()}" if movement_calendar_column == "yhat" else f"upper bound for {metric.replace('_', ' ').lower()}"
+        )
+
         render_monthly_calendar_view(
-            future_forecast[["ds", "yhat"]],
-            value_col="yhat",
+            future_forecast[["ds", "yhat", "yhat_upper"]],
+            value_col=movement_calendar_column,
             title=f"{airport} {metric} forecast — calendar view",
             key_prefix=f"movement_calendar_{airport}_{metric}",
-            value_label=f"predicted {metric.replace('_', ' ').lower()}",
+            value_label=movement_calendar_label,
+            months_per_view=3,
         )
 
         # Summary table
