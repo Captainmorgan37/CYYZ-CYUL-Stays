@@ -728,7 +728,12 @@ if not arr_raw.empty and not dep_raw.empty:
                     [day - pd.Timedelta(days=1), day, day + pd.Timedelta(days=1)]
                 )
 
-        holidays_df = pd.DataFrame({"ds": pd.to_datetime(holiday_dates)})
+        holidays_df = pd.DataFrame(
+            {
+                "ds": pd.to_datetime(holiday_dates),
+                "holiday": "canadian_holiday",
+            }
+        )
         return holidays_df.drop_duplicates().reset_index(drop=True)
 
     # Let the user choose forecast length
