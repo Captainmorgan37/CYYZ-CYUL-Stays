@@ -301,8 +301,13 @@ def render_monthly_calendar_view(
         month_tables.append(table_html)
 
     grid_template = f"repeat({months_per_view}, minmax(220px, 1fr))"
+    inline_style = (
+        "display: grid; "
+        f"grid-template-columns: {grid_template}; "
+        "gap: 1rem; align-items: start; margin-top: 0.5rem;"
+    )
     st.markdown(
-        f"<div class='calendar-grid' style=\"grid-template-columns: {grid_template};\">" + "".join(month_tables) + "</div>",
+        f"<div class='calendar-grid' style=\"{inline_style}\">" + "".join(month_tables) + "</div>",
         unsafe_allow_html=True,
     )
 
