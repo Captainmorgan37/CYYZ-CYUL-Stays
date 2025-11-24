@@ -702,38 +702,36 @@ if not arr_raw.empty and not dep_raw.empty:
         dates = pd.date_range(start, end, freq="D")
         year_list = sorted(list(set(dates.year)))
 
-        holiday_dates = []
+        holiday_entries: list[dict[str, object]] = []
+
+        def add_holiday(name: str, base_date: pd.Timestamp):
+            for offset in (-1, 0, 1):
+                holiday_entries.append(
+                    {"ds": base_date + pd.Timedelta(days=offset), "holiday": name}
+                )
 
         for y in year_list:
-            hd = [
-                f"{y}-01-01",  # New Year’s Day
-                pd.date_range(
+            holidays_for_year = {
+                "New Year's Day": pd.Timestamp(f"{y}-01-01"),
+                "Family Day": pd.date_range(
                     start=f"{y}-02-01",
                     end=f"{y}-02-28",
                     freq="W-MON",
-                )[2].strftime("%Y-%m-%d"),  # Family Day (3rd Mon Feb)
-                str(pd.Timestamp(f"{y}-03-31") - pd.offsets.Week(weekday=4)),  # Good Friday (approx)
-                str(pd.Timestamp(f"{y}-05-24") - pd.offsets.Week(weekday=0)),  # Victoria Day (Mon before May 25)
-                f"{y}-07-01",  # Canada Day
-                str(pd.Timestamp(f"{y}-08-01") + pd.offsets.Week(weekday=0)),  # Civic Holiday (1st Mon Aug)
-                str(pd.Timestamp(f"{y}-09-01") + pd.offsets.Week(weekday=0)),  # Labour Day (1st Mon Sep)
-                str(pd.Timestamp(f"{y}-10-01") + pd.offsets.Week(weekday=0)),  # Thanksgiving (2nd Mon Oct)
-                f"{y}-12-25",  # Christmas Day
-                f"{y}-12-26",  # Boxing Day
-            ]
-
-            for d in hd:
-                day = pd.to_datetime(d)
-                holiday_dates.extend(
-                    [day - pd.Timedelta(days=1), day, day + pd.Timedelta(days=1)]
-                )
-
-        holidays_df = pd.DataFrame(
-            {
-                "ds": pd.to_datetime(holiday_dates),
-                "holiday": "canadian_holiday",
+                )[2],
+                "Good Friday": pd.Timestamp(f"{y}-03-31") - pd.offsets.Week(weekday=4),
+                "Victoria Day": pd.Timestamp(f"{y}-05-24") - pd.offsets.Week(weekday=0),
+                "Canada Day": pd.Timestamp(f"{y}-07-01"),
+                "Civic Holiday": pd.Timestamp(f"{y}-08-01") + pd.offsets.Week(weekday=0),
+                "Labour Day": pd.Timestamp(f"{y}-09-01") + pd.offsets.Week(weekday=0),
+                "Thanksgiving": pd.Timestamp(f"{y}-10-01") + pd.offsets.Week(weekday=0),
+                "Christmas": pd.Timestamp(f"{y}-12-25"),
+                "Boxing Day": pd.Timestamp(f"{y}-12-26"),
             }
-        )
+
+            for holiday_name, date in holidays_for_year.items():
+                add_holiday(holiday_name, pd.to_datetime(date))
+
+        holidays_df = pd.DataFrame(holiday_entries)
         return holidays_df.drop_duplicates().reset_index(drop=True)
 
     # Let the user choose forecast length
@@ -767,36 +765,29 @@ if not arr_raw.empty and not dep_raw.empty:
 
         df_airport["dow"] = df_airport["ds"].dt.dayofweek
         df_airport["month"] = df_airport["ds"].dt.month
-        df_airport["sin_annual"] = np.sin(
-            2 * np.pi * df_airport["ds"].dt.dayofyear / 365.25
-        )
-        df_airport["cos_annual"] = np.cos(
-            2 * np.pi * df_airport["ds"].dt.dayofyear / 365.25
-        )
-
         holidays_df = build_canadian_holidays(
             df_airport["ds"].min(),
             df_airport["ds"].max() + pd.Timedelta(days=forecast_days),
         )
 
         model = Prophet(
-            yearly_seasonality=False,
-            weekly_seasonality=False,
+            yearly_seasonality=True,
+            weekly_seasonality=True,
             daily_seasonality=False,
             holidays=holidays_df,
+            holidays_prior_scale=20,
+            changepoint_prior_scale=0.3,
             interval_width=0.80,
         )
 
-        for reg in ["dow", "month", "sin_annual", "cos_annual"]:
-            model.add_regressor(reg, mode="additive")
+        model.add_regressor("dow", mode="multiplicative")
+        model.add_regressor("month", mode="additive")
 
         model.fit(df_airport)
 
         future = model.make_future_dataframe(periods=forecast_days)
         future["dow"] = future["ds"].dt.dayofweek
         future["month"] = future["ds"].dt.month
-        future["sin_annual"] = np.sin(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
-        future["cos_annual"] = np.cos(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
 
         forecast = model.predict(future)
 
@@ -839,7 +830,8 @@ if not arr_raw.empty and not dep_raw.empty:
         )
 
         st.caption(
-            "Enhanced Prophet model with day-of-week, monthly, annual cycle, and Canadian holiday regressors. "
+            "Enhanced Prophet model with multiplicative day-of-week effects, monthly trend adjustment, "
+            "yearly/weekly seasonality, and individual Canadian holiday regressors. "
             "Values are mean ± 80% confidence interval."
         )
 else:
@@ -925,12 +917,6 @@ if not arr_raw.empty and not dep_raw.empty:
         df_train["ds"] = pd.to_datetime(df_train["ds"])
         df_train["dow"] = df_train["ds"].dt.dayofweek
         df_train["month"] = df_train["ds"].dt.month
-        df_train["sin_annual"] = np.sin(
-            2 * np.pi * df_train["ds"].dt.dayofyear / 365.25
-        )
-        df_train["cos_annual"] = np.cos(
-            2 * np.pi * df_train["ds"].dt.dayofyear / 365.25
-        )
 
         holidays_df = build_canadian_holidays(
             df_train["ds"].min(),
@@ -939,22 +925,22 @@ if not arr_raw.empty and not dep_raw.empty:
 
         # Build Prophet model
         m = Prophet(
-            yearly_seasonality=False,
-            weekly_seasonality=False,
+            yearly_seasonality=True,
+            weekly_seasonality=True,
             daily_seasonality=False,
             holidays=holidays_df,
+            holidays_prior_scale=20,
+            changepoint_prior_scale=0.3,
             interval_width=0.80,
         )
 
-        for reg in ["dow", "month", "sin_annual", "cos_annual"]:
-            m.add_regressor(reg, mode="additive")
+        m.add_regressor("dow", mode="multiplicative")
+        m.add_regressor("month", mode="additive")
 
-        m.fit(df_train[["ds", "y", "dow", "month", "sin_annual", "cos_annual"]])
+        m.fit(df_train[["ds", "y", "dow", "month"]])
         future = m.make_future_dataframe(periods=forecast_days)
         future["dow"] = future["ds"].dt.dayofweek
         future["month"] = future["ds"].dt.month
-        future["sin_annual"] = np.sin(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
-        future["cos_annual"] = np.cos(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
 
         forecast = m.predict(future)
 
@@ -1070,7 +1056,8 @@ if not arr_raw.empty and not dep_raw.empty:
         )
 
         st.caption(
-            "Forecast generated with an enhanced Prophet model that incorporates day-of-week, monthly, annual cycle, and Canadian holiday regressors. "
+            "Forecast generated with a tuned Prophet model using multiplicative day-of-week effects, monthly adjustments, "
+            "yearly/weekly seasonality, and individual Canadian holiday regressors. "
             "Confidence interval represents ±80%. "
             "Ground Load Index = Arrivals + Departures. Toggle the historical overlay for full movement context."
         )
