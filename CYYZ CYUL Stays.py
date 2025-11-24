@@ -707,7 +707,11 @@ if not arr_raw.empty and not dep_raw.empty:
         for y in year_list:
             hd = [
                 f"{y}-01-01",  # New Year’s Day
-                f"{y}-02-{(pd.Timestamp(f'{y}-02-01') + pd.offsets.Week(week=2, weekday=0)).day}",  # Family Day (3rd Mon Feb)
+                pd.date_range(
+                    start=f"{y}-02-01",
+                    end=f"{y}-02-28",
+                    freq="W-MON",
+                )[2].strftime("%Y-%m-%d"),  # Family Day (3rd Mon Feb)
                 str(pd.Timestamp(f"{y}-03-31") - pd.offsets.Week(weekday=4)),  # Good Friday (approx)
                 str(pd.Timestamp(f"{y}-05-24") - pd.offsets.Week(weekday=0)),  # Victoria Day (Mon before May 25)
                 f"{y}-07-01",  # Canada Day
