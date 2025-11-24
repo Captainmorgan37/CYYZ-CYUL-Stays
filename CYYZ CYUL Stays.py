@@ -829,9 +829,25 @@ if not arr_raw.empty and not dep_raw.empty:
 
         # Summary table
         st.subheader("Forecast Summary")
-        st.dataframe(
-            forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
-            use_container_width=True
+        summary_df = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days).copy()
+        summary_df["ds"] = pd.to_datetime(summary_df["ds"]).dt.strftime("%Y-%m-%d")
+        summary_df = summary_df.rename(
+            columns={
+                "ds": "Date",
+                "yhat": "Expected Ground Load",
+                "yhat_lower": "Low Estimate",
+                "yhat_upper": "High Estimate",
+            }
+        )
+        summary_df = summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+
+        st.dataframe(summary_df, use_container_width=True)
+        st.download_button(
+            "Download forecast summary (CSV)",
+            data=summary_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"{airport.lower()}_overnights_forecast.csv",
+            mime="text/csv",
+            key=f"forecast_summary_download_{airport}",
         )
 
         st.caption(
@@ -1055,9 +1071,31 @@ if not arr_raw.empty and not dep_raw.empty:
 
         # Summary table
         st.subheader("Forecast Summary")
-        st.dataframe(
-            forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days),
-            use_container_width=True,
+        movement_summary_df = (
+            forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]]
+            .tail(forecast_days)
+            .copy()
+        )
+        movement_summary_df["ds"] = pd.to_datetime(movement_summary_df["ds"]).dt.strftime("%Y-%m-%d")
+        movement_summary_df = movement_summary_df.rename(
+            columns={
+                "ds": "Date",
+                "yhat": "Expected Ground Load",
+                "yhat_lower": "Low Estimate",
+                "yhat_upper": "High Estimate",
+            }
+        )
+        movement_summary_df = movement_summary_df[
+            ["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]
+        ]
+
+        st.dataframe(movement_summary_df, use_container_width=True)
+        st.download_button(
+            "Download forecast summary (CSV)",
+            data=movement_summary_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"{airport.lower()}_{metric.lower()}_forecast.csv",
+            mime="text/csv",
+            key=f"movement_summary_download_{airport}_{metric}",
         )
 
         st.caption(
