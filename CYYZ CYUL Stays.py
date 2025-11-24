@@ -698,6 +698,35 @@ if not arr_raw.empty and not dep_raw.empty:
     from prophet import Prophet
     import plotly.express as px
 
+    def build_canadian_holidays(start, end):
+        dates = pd.date_range(start, end, freq="D")
+        year_list = sorted(list(set(dates.year)))
+
+        holiday_dates = []
+
+        for y in year_list:
+            hd = [
+                f"{y}-01-01",  # New Year’s Day
+                f"{y}-02-{(pd.Timestamp(f'{y}-02-01') + pd.offsets.Week(week=2, weekday=0)).day}",  # Family Day (3rd Mon Feb)
+                str(pd.Timestamp(f"{y}-03-31") - pd.offsets.Week(weekday=4)),  # Good Friday (approx)
+                str(pd.Timestamp(f"{y}-05-24") - pd.offsets.Week(weekday=0)),  # Victoria Day (Mon before May 25)
+                f"{y}-07-01",  # Canada Day
+                str(pd.Timestamp(f"{y}-08-01") + pd.offsets.Week(weekday=0)),  # Civic Holiday (1st Mon Aug)
+                str(pd.Timestamp(f"{y}-09-01") + pd.offsets.Week(weekday=0)),  # Labour Day (1st Mon Sep)
+                str(pd.Timestamp(f"{y}-10-01") + pd.offsets.Week(weekday=0)),  # Thanksgiving (2nd Mon Oct)
+                f"{y}-12-25",  # Christmas Day
+                f"{y}-12-26",  # Boxing Day
+            ]
+
+            for d in hd:
+                day = pd.to_datetime(d)
+                holiday_dates.extend(
+                    [day - pd.Timedelta(days=1), day, day + pd.Timedelta(days=1)]
+                )
+
+        holidays_df = pd.DataFrame({"ds": pd.to_datetime(holiday_dates)})
+        return holidays_df.drop_duplicates().reset_index(drop=True)
+
     # Let the user choose forecast length
     forecast_days = st.slider("Forecast horizon (days ahead)", 7, 180, 60, 1)
 
@@ -725,9 +754,41 @@ if not arr_raw.empty and not dep_raw.empty:
         )
         df_airport = df_airport.groupby("ds").mean().reset_index()
 
-        model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+        df_airport["ds"] = pd.to_datetime(df_airport["ds"])
+
+        df_airport["dow"] = df_airport["ds"].dt.dayofweek
+        df_airport["month"] = df_airport["ds"].dt.month
+        df_airport["sin_annual"] = np.sin(
+            2 * np.pi * df_airport["ds"].dt.dayofyear / 365.25
+        )
+        df_airport["cos_annual"] = np.cos(
+            2 * np.pi * df_airport["ds"].dt.dayofyear / 365.25
+        )
+
+        holidays_df = build_canadian_holidays(
+            df_airport["ds"].min(),
+            df_airport["ds"].max() + pd.Timedelta(days=forecast_days),
+        )
+
+        model = Prophet(
+            yearly_seasonality=False,
+            weekly_seasonality=False,
+            daily_seasonality=False,
+            holidays=holidays_df,
+            interval_width=0.80,
+        )
+
+        for reg in ["dow", "month", "sin_annual", "cos_annual"]:
+            model.add_regressor(reg, mode="additive")
+
         model.fit(df_airport)
+
         future = model.make_future_dataframe(periods=forecast_days)
+        future["dow"] = future["ds"].dt.dayofweek
+        future["month"] = future["ds"].dt.month
+        future["sin_annual"] = np.sin(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
+        future["cos_annual"] = np.cos(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
+
         forecast = model.predict(future)
 
         fig = px.line(
@@ -769,7 +830,7 @@ if not arr_raw.empty and not dep_raw.empty:
         )
 
         st.caption(
-            "Uses a Prophet model with automatic detection of weekly and seasonal patterns. "
+            "Enhanced Prophet model with day-of-week, monthly, annual cycle, and Canadian holiday regressors. "
             "Values are mean ± 80% confidence interval."
         )
 else:
@@ -851,11 +912,41 @@ if not arr_raw.empty and not dep_raw.empty:
         df = daily_mov[daily_mov["Airport"] == airport][["date", "Arrivals", "Departures", "Ground_Load_Index"]]
         df = df.groupby("date").sum().reset_index()
 
-        # Build Prophet model
-        m = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
         df_train = df.rename(columns={"date": "ds", metric: "y"})
-        m.fit(df_train[["ds", "y"]])
+        df_train["ds"] = pd.to_datetime(df_train["ds"])
+        df_train["dow"] = df_train["ds"].dt.dayofweek
+        df_train["month"] = df_train["ds"].dt.month
+        df_train["sin_annual"] = np.sin(
+            2 * np.pi * df_train["ds"].dt.dayofyear / 365.25
+        )
+        df_train["cos_annual"] = np.cos(
+            2 * np.pi * df_train["ds"].dt.dayofyear / 365.25
+        )
+
+        holidays_df = build_canadian_holidays(
+            df_train["ds"].min(),
+            df_train["ds"].max() + pd.Timedelta(days=forecast_days),
+        )
+
+        # Build Prophet model
+        m = Prophet(
+            yearly_seasonality=False,
+            weekly_seasonality=False,
+            daily_seasonality=False,
+            holidays=holidays_df,
+            interval_width=0.80,
+        )
+
+        for reg in ["dow", "month", "sin_annual", "cos_annual"]:
+            m.add_regressor(reg, mode="additive")
+
+        m.fit(df_train[["ds", "y", "dow", "month", "sin_annual", "cos_annual"]])
         future = m.make_future_dataframe(periods=forecast_days)
+        future["dow"] = future["ds"].dt.dayofweek
+        future["month"] = future["ds"].dt.month
+        future["sin_annual"] = np.sin(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
+        future["cos_annual"] = np.cos(2 * np.pi * future["ds"].dt.dayofyear / 365.25)
+
         forecast = m.predict(future)
 
         # --- Plotly chart ---
@@ -970,7 +1061,7 @@ if not arr_raw.empty and not dep_raw.empty:
         )
 
         st.caption(
-            "Forecast generated with Prophet using weekly and yearly seasonality. "
+            "Forecast generated with an enhanced Prophet model that incorporates day-of-week, monthly, annual cycle, and Canadian holiday regressors. "
             "Confidence interval represents ±80%. "
             "Ground Load Index = Arrivals + Departures. Toggle the historical overlay for full movement context."
         )
