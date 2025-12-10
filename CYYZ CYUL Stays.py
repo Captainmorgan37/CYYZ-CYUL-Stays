@@ -898,10 +898,10 @@ if not arr_raw.empty and not dep_raw.empty:
 
         st.dataframe(summary_df, use_container_width=True)
         st.download_button(
-            "Download forecast summary (CSV)",
-            data=summary_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"{airport.lower()}_overnights_forecast.csv",
-            mime="text/csv",
+            "Download forecast summary (XLSX)",
+            data=build_single_sheet_xlsx(summary_df, sheet_name="Forecast Summary"),
+            file_name=f"{airport.lower()}_overnights_forecast.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"forecast_summary_download_{airport}",
         )
 
@@ -1146,10 +1146,12 @@ if not arr_raw.empty and not dep_raw.empty:
 
         st.dataframe(movement_summary_df, use_container_width=True)
         st.download_button(
-            "Download forecast summary (CSV)",
-            data=movement_summary_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"{airport.lower()}_{metric.lower()}_forecast.csv",
-            mime="text/csv",
+            "Download forecast summary (XLSX)",
+            data=build_single_sheet_xlsx(
+                movement_summary_df, sheet_name="Forecast Summary"
+            ),
+            file_name=f"{airport.lower()}_{metric.lower()}_forecast.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"movement_summary_download_{airport}_{metric}",
         )
 
