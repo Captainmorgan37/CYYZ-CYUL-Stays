@@ -4,6 +4,7 @@ import io
 import hashlib
 from collections import deque
 from datetime import datetime, timedelta, time
+from openpyxl.utils import get_column_letter
 
 import pandas as pd
 import pytz
@@ -100,6 +101,15 @@ EMBRAER_PREFIXES = ("E54", "E55")
 CJ_PREFIXES = ("C25",)
 
 
+def timezone_naive(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with timezone-aware datetimes converted to naive."""
+    df_copy = df.copy()
+    for col in df_copy.columns:
+        if pd.api.types.is_datetime64tz_dtype(df_copy[col]):
+            df_copy[col] = df_copy[col].dt.tz_localize(None)
+    return df_copy
+
+
 def df_signature(df: pd.DataFrame) -> str:
     """Return a lightweight hash representing the dataframe contents."""
     if df is None or df.empty:
@@ -135,6 +145,51 @@ def build_results_csv(
     buffer.write("\n# Average counts per day (by metric)\n")
     average_counts.to_csv(buffer, index=False)
     return buffer.getvalue().encode("utf-8")
+
+
+def autofit_columns(writer: pd.ExcelWriter, df: pd.DataFrame, sheet_name: str, max_width: int = 40):
+    """Resize column widths based on content for a nicer XLSX export."""
+    sheet = writer.sheets[sheet_name]
+    for idx, col in enumerate(df.columns, start=1):
+        series = df[col].astype(str).fillna("")
+        max_len = max(len(str(col)), series.map(len).max()) + 2
+        width = max(10, min(max_width, max_len))
+        sheet.column_dimensions[get_column_letter(idx)].width = width
+
+
+def build_results_xlsx(
+    combined: pd.DataFrame,
+    summary_counts: pd.DataFrame,
+    average_counts: pd.DataFrame,
+) -> bytes:
+    """Create an XLSX workbook with a sheet for each results table."""
+    combined = timezone_naive(combined)
+    summary_counts = timezone_naive(summary_counts)
+    average_counts = timezone_naive(average_counts)
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        combined.to_excel(writer, index=False, sheet_name="Daily Results")
+        summary_counts.to_excel(writer, index=False, sheet_name="Summary Counts")
+        average_counts.to_excel(writer, index=False, sheet_name="Average Counts")
+
+        autofit_columns(writer, combined, "Daily Results")
+        autofit_columns(writer, summary_counts, "Summary Counts")
+        autofit_columns(writer, average_counts, "Average Counts")
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def build_single_sheet_xlsx(df: pd.DataFrame, sheet_name: str) -> bytes:
+    """Create a simple single-sheet XLSX export with autofit columns."""
+    df = timezone_naive(df)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        autofit_columns(writer, df, sheet_name)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def render_monthly_calendar_view(
@@ -661,17 +716,17 @@ if not arr_raw.empty and not dep_raw.empty:
                 col_d1, col_d2 = st.columns(2)
                 with col_d1:
                     st.download_button(
-                        "Download results (CSV)",
-                        data=build_results_csv(combined, summary_counts, average_counts),
-                        file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.csv",
-                        mime="text/csv"
+                        "Download results (XLSX)",
+                        data=build_results_xlsx(combined, summary_counts, average_counts),
+                        file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 with col_d2:
                     st.download_button(
-                        "Download diagnostics (CSV)",
-                        data=diagnostics.to_csv(index=False).encode("utf-8"),
-                        file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.csv",
-                        mime="text/csv"
+                        "Download diagnostics (XLSX)",
+                        data=build_single_sheet_xlsx(diagnostics, "Diagnostics"),
+                        file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
         st.markdown(
