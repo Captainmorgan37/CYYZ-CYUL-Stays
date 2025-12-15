@@ -192,6 +192,12 @@ def build_single_sheet_xlsx(df: pd.DataFrame, sheet_name: str) -> bytes:
     return buffer.getvalue()
 
 
+def format_generation_timestamp(tz: pytz.timezone | None = None) -> str:
+    """Return a compact date stamp (DDMMMYY) for export file names."""
+    current = datetime.now(tz) if tz else datetime.now()
+    return current.strftime("%d%b%y").upper()
+
+
 def render_monthly_calendar_view(
     data: pd.DataFrame,
     value_col: str,
@@ -424,6 +430,7 @@ with col_b:
 local_tz_name = "America/Toronto"
 LOCAL_TZ = pytz.timezone(local_tz_name)
 DAYFIRST = True
+GENERATION_STAMP = format_generation_timestamp(LOCAL_TZ)
 
 st.caption(
     "Timestamps are assumed to be in UTC and converted to **America/Toronto** "
@@ -718,14 +725,20 @@ if not arr_raw.empty and not dep_raw.empty:
                     st.download_button(
                         "Download results (XLSX)",
                         data=build_results_xlsx(combined, summary_counts, average_counts),
-                        file_name=f"{apt}_overnights_{start_date.isoformat()}_{end_date.isoformat()}_metrics.xlsx",
+                        file_name=(
+                            f"{apt}_overnights_{start_date.isoformat()}_"
+                            f"{end_date.isoformat()}_metrics_{GENERATION_STAMP}.xlsx"
+                        ),
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 with col_d2:
                     st.download_button(
                         "Download diagnostics (XLSX)",
                         data=build_single_sheet_xlsx(diagnostics, "Diagnostics"),
-                        file_name=f"{apt}_overnight_intervals_{start_date.isoformat()}_{end_date.isoformat()}_diagnostics.xlsx",
+                        file_name=(
+                            f"{apt}_overnight_intervals_{start_date.isoformat()}_"
+                            f"{end_date.isoformat()}_diagnostics_{GENERATION_STAMP}.xlsx"
+                        ),
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
@@ -900,7 +913,7 @@ if not arr_raw.empty and not dep_raw.empty:
         st.download_button(
             "Download forecast summary (XLSX)",
             data=build_single_sheet_xlsx(summary_df, sheet_name="Forecast Summary"),
-            file_name=f"{airport.lower()}_overnights_forecast.xlsx",
+            file_name=f"{airport.lower()}_overnights_forecast_{GENERATION_STAMP}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"forecast_summary_download_{airport}",
         )
@@ -1150,7 +1163,7 @@ if not arr_raw.empty and not dep_raw.empty:
             data=build_single_sheet_xlsx(
                 movement_summary_df, sheet_name="Forecast Summary"
             ),
-            file_name=f"{airport.lower()}_{metric.lower()}_forecast.xlsx",
+            file_name=f"{airport.lower()}_{metric.lower()}_forecast_{GENERATION_STAMP}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"movement_summary_download_{airport}_{metric}",
         )
