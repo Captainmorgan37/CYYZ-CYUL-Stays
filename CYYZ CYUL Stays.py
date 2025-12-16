@@ -20,6 +20,13 @@ st.caption("Upload FL3XX arrivals/departures CSVs for a selected date range and 
 
 st.session_state.setdefault("overnights_results", None)
 
+local_tz_name = "America/Toronto"
+LOCAL_TZ = pytz.timezone(local_tz_name)
+DAYFIRST = True
+
+ARRIVAL_TIME_CANDIDATES = ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"]
+DEPARTURE_TIME_CANDIDATES = ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"]
+
 # ===============================
 # Helpers
 # ===============================
@@ -196,6 +203,36 @@ def format_generation_timestamp(tz: pytz.timezone | None = None) -> str:
     """Return a compact date stamp (DDMMMYY) for export file names."""
     current = datetime.now(tz) if tz else datetime.now()
     return current.strftime("%d%b%y").upper()
+
+
+def infer_date_range_from_uploads(
+    arrivals: pd.DataFrame, departures: pd.DataFrame, local_tz: pytz.timezone
+) -> tuple[datetime.date, datetime.date] | None:
+    """Infer the earliest/latest dates from uploaded arrival/departure timestamps."""
+    candidate_series: list[pd.Series] = []
+
+    def add_series(df: pd.DataFrame, candidates: list[str]):
+        col = pick_col(df.columns, candidates)
+        if col:
+            parsed = parse_flexible_utc_to_local(df[col], local_tz, dayfirst=DAYFIRST)
+            candidate_series.append(parsed)
+
+    if not arrivals.empty:
+        add_series(arrivals, ARRIVAL_TIME_CANDIDATES)
+    if not departures.empty:
+        add_series(departures, DEPARTURE_TIME_CANDIDATES)
+
+    if not candidate_series:
+        return None
+
+    combined = pd.concat(candidate_series).dropna()
+    if combined.empty:
+        return None
+
+    return combined.min().date(), combined.max().date()
+
+
+GENERATION_STAMP = format_generation_timestamp(LOCAL_TZ)
 
 
 def render_monthly_calendar_view(
@@ -402,7 +439,7 @@ st.subheader("2) Settings")
 col_a, col_b = st.columns([1.2, 1.2])
 with col_a:
     airport_input = st.text_input(
-        "Airports (ICAO — comma separated)", value="CYYZ"
+        "Airports (ICAO — comma separated)", value="CYYZ, CYUL"
     )
     airports = []
     for token in airport_input.split(","):
@@ -414,10 +451,29 @@ with col_b:
     default_start = datetime(today.year, today.month, 1).date()
     last_day = calendar.monthrange(today.year, today.month)[1]
     default_end = datetime(today.year, today.month, last_day).date()
+    inferred_range = infer_date_range_from_uploads(arr_raw, dep_raw, LOCAL_TZ)
+    data_sig = (df_signature(arr_raw), df_signature(dep_raw)) if not (arr_raw.empty and dep_raw.empty) else None
+    range_key = "reporting_range"
+    sig_key = "reporting_range_data_sig"
+    default_range = (default_start, default_end)
+
+    if range_key not in st.session_state:
+        st.session_state[range_key] = inferred_range or default_range
+        st.session_state[sig_key] = data_sig
+    else:
+        last_sig = st.session_state.get(sig_key)
+        if data_sig != last_sig:
+            st.session_state[sig_key] = data_sig
+            if inferred_range:
+                st.session_state[range_key] = inferred_range
+            elif data_sig is None:
+                st.session_state[range_key] = default_range
+
     date_range = st.date_input(
         "Reporting range (start and end dates, inclusive)",
-        value=(default_start, default_end),
-        help="Choose the start and end date to include in the analysis."
+        value=st.session_state[range_key],
+        key=range_key,
+        help="Choose the start and end date to include in the analysis. Automatically set from uploaded files when possible."
     )
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
@@ -426,11 +482,6 @@ with col_b:
     if start_date > end_date:
         st.warning("Start date is after end date. Swapping them for processing.")
         start_date, end_date = end_date, start_date
-
-local_tz_name = "America/Toronto"
-LOCAL_TZ = pytz.timezone(local_tz_name)
-DAYFIRST = True
-GENERATION_STAMP = format_generation_timestamp(LOCAL_TZ)
 
 st.caption(
     "Timestamps are assumed to be in UTC and converted to **America/Toronto** "
@@ -446,8 +497,8 @@ if not arr_raw.empty and not dep_raw.empty:
     tail_dep = pick_col(dep_cols, ["Aircraft", "Tail", "Registration", "A/C"])
     arr_to_col = pick_col(arr_cols, ["To (ICAO)", "To", "Destination"])
     dep_from_col = pick_col(dep_cols, ["From (ICAO)", "From", "Origin"])
-    arr_time_col = pick_col(arr_cols, ["On-Block (Act)", "On-Block (Actual)", "On-Block", "ATA", "Arrival (UTC)"])
-    dep_time_col = pick_col(dep_cols, ["Off-Block (Act)", "Off-Block (Actual)", "Off-Block", "ATD", "Departure (UTC)"])
+    arr_time_col = pick_col(arr_cols, ARRIVAL_TIME_CANDIDATES)
+    dep_time_col = pick_col(dep_cols, DEPARTURE_TIME_CANDIDATES)
     arr_type_col = pick_col(arr_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
     dep_type_col = pick_col(dep_cols, ["Aircraft Type", "Type", "A/C Type", "AC Type"])
 
