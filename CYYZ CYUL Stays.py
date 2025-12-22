@@ -4,6 +4,7 @@ import io
 import hashlib
 from collections import deque
 from datetime import datetime, timedelta, time
+from typing import Optional, Tuple
 from openpyxl.utils import get_column_letter
 
 import pandas as pd
@@ -199,7 +200,7 @@ def build_single_sheet_xlsx(df: pd.DataFrame, sheet_name: str) -> bytes:
     return buffer.getvalue()
 
 
-def format_generation_timestamp(tz: pytz.timezone | None = None) -> str:
+def format_generation_timestamp(tz: Optional[pytz.timezone] = None) -> str:
     """Return a compact date stamp (DDMMMYY) for export file names."""
     current = datetime.now(tz) if tz else datetime.now()
     return current.strftime("%d%b%y").upper()
@@ -207,7 +208,7 @@ def format_generation_timestamp(tz: pytz.timezone | None = None) -> str:
 
 def infer_date_range_from_uploads(
     arrivals: pd.DataFrame, departures: pd.DataFrame, local_tz: pytz.timezone
-) -> tuple[datetime.date, datetime.date] | None:
+) -> Optional[Tuple[datetime.date, datetime.date]]:
     """Infer the earliest/latest dates from uploaded arrival/departure timestamps."""
     candidate_series: list[pd.Series] = []
 
@@ -240,7 +241,7 @@ def render_monthly_calendar_view(
     value_col: str,
     title: str,
     key_prefix: str,
-    value_label: str | None = None,
+    value_label: Optional[str] = None,
     value_formatter=None,
     months_per_view: int = 1,
 ) -> bool:
