@@ -206,8 +206,9 @@ def build_multi_sheet_xlsx(sheets: dict[str, pd.DataFrame]) -> bytes:
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         used_names: set[str] = set()
 
+        invalid_chars = set("[]:*?/\\")
         for raw_name, df in sheets.items():
-            clean_name = "".join(c if c not in r"[]:*?/\" else "_" for c in raw_name).strip()
+            clean_name = "".join(c if c not in invalid_chars else "_" for c in raw_name).strip()
             clean_name = clean_name[:31] or "Sheet"
             base_name = clean_name
             suffix = 1
