@@ -200,6 +200,15 @@ def build_single_sheet_xlsx(df: pd.DataFrame, sheet_name: str) -> bytes:
     return buffer.getvalue()
 
 
+def round_forecast_summary(df: pd.DataFrame, decimals: int = 2) -> pd.DataFrame:
+    """Round forecast summary numeric columns to a consistent precision."""
+    df = df.copy()
+    numeric_cols = df.select_dtypes(include=["number"]).columns
+    if len(numeric_cols) > 0:
+        df[numeric_cols] = df[numeric_cols].round(decimals)
+    return df
+
+
 def build_multi_sheet_xlsx(sheets: dict[str, pd.DataFrame]) -> bytes:
     """Create an XLSX workbook with multiple sheets, auto-fitting columns."""
     buffer = io.BytesIO()
@@ -368,9 +377,7 @@ def render_monthly_calendar_view(
     def default_formatter(val):
         if val is None:
             return ""
-        if abs(val - round(val)) < 0.01:
-            return f"{int(round(val))}"
-        return f"{val:.1f}"
+        return f"{val:.2f}"
 
     fmt = value_formatter or default_formatter
 
@@ -968,6 +975,7 @@ if not arr_raw.empty and not dep_raw.empty:
                 }
             )
             summary_df = summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+            summary_df = round_forecast_summary(summary_df)
 
             output = {
                 "forecast": forecast,
@@ -1193,6 +1201,7 @@ if not arr_raw.empty and not dep_raw.empty:
             summary_df = summary_df[
                 ["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]
             ]
+            summary_df = round_forecast_summary(summary_df)
 
             output = {
                 "forecast": forecast,
@@ -1400,7 +1409,8 @@ if not arr_raw.empty and not dep_raw.empty:
                     "yhat_upper": "High Estimate",
                 }
             )
-            return summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+            summary_df = summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+            return round_forecast_summary(summary_df)
 
         for export_airport in export_airports:
             overnight_summary = compute_overnight_export_summary(export_airport)
