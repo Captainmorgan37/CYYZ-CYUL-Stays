@@ -969,12 +969,12 @@ if not arr_raw.empty and not dep_raw.empty:
             summary_df = summary_df.rename(
                 columns={
                     "ds": "Date",
-                    "yhat": "Expected Ground Load",
+                    "yhat": "Expected Overnights",
                     "yhat_lower": "Low Estimate",
                     "yhat_upper": "High Estimate",
                 }
             )
-            summary_df = summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+            summary_df = summary_df[["Date", "Expected Overnights", "Low Estimate", "High Estimate"]]
             summary_df = round_forecast_summary(summary_df)
 
             output = {
@@ -1404,12 +1404,12 @@ if not arr_raw.empty and not dep_raw.empty:
             summary_df = summary_df.rename(
                 columns={
                     "ds": "Date",
-                    "yhat": "Expected Ground Load",
+                    "yhat": "Expected Overnights",
                     "yhat_lower": "Low Estimate",
                     "yhat_upper": "High Estimate",
                 }
             )
-            summary_df = summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+            summary_df = summary_df[["Date", "Expected Overnights", "Low Estimate", "High Estimate"]]
             return round_forecast_summary(summary_df)
 
         for export_airport in export_airports:
