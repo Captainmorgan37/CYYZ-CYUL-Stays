@@ -200,6 +200,32 @@ def build_single_sheet_xlsx(df: pd.DataFrame, sheet_name: str) -> bytes:
     return buffer.getvalue()
 
 
+def build_multi_sheet_xlsx(sheets: dict[str, pd.DataFrame]) -> bytes:
+    """Create an XLSX workbook with multiple sheets, auto-fitting columns."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        used_names: set[str] = set()
+
+        invalid_chars = set("[]:*?/\\")
+        for raw_name, df in sheets.items():
+            clean_name = "".join(c if c not in invalid_chars else "_" for c in raw_name).strip()
+            clean_name = clean_name[:31] or "Sheet"
+            base_name = clean_name
+            suffix = 1
+            while clean_name in used_names:
+                suffix_label = f"_{suffix}"
+                clean_name = f"{base_name[:31 - len(suffix_label)]}{suffix_label}"
+                suffix += 1
+            used_names.add(clean_name)
+
+            df_clean = timezone_naive(df)
+            df_clean.to_excel(writer, index=False, sheet_name=clean_name)
+            autofit_columns(writer, df_clean, clean_name)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def format_generation_timestamp(tz: Optional[pytz.timezone] = None) -> str:
     """Return a compact date stamp (DDMMMYY) for export file names."""
     current = datetime.now(tz) if tz else datetime.now()
@@ -860,7 +886,9 @@ if not arr_raw.empty and not dep_raw.empty:
         return holidays_df.drop_duplicates().reset_index(drop=True)
 
     # Let the user choose forecast length
-    forecast_days = st.slider("Forecast horizon (days ahead)", 7, 180, 60, 1)
+    overnight_forecast_days = st.slider(
+        "Forecast horizon (days ahead)", 7, 180, 60, 1, key="overnight_forecast_days"
+    )
 
     # Build historical daily counts from combined results
     all_airports = cached_airports or airports or ["CYYZ"]
@@ -881,53 +909,94 @@ if not arr_raw.empty and not dep_raw.empty:
     else:
         # Prophet expects columns named 'ds' (date) and 'y' (value)
         airport = st.selectbox("Select airport for forecast", all_airports)
-        df_airport = hist_df[hist_df["Airport"] == airport][["Date", "Overnights_A_check"]].rename(
-            columns={"Date": "ds", "Overnights_A_check": "y"}
-        )
-        df_airport = df_airport.groupby("ds").mean().reset_index()
-
-        df_airport["ds"] = pd.to_datetime(df_airport["ds"])
-
-        df_airport["dow"] = df_airport["ds"].dt.dayofweek
-        df_airport["month"] = df_airport["ds"].dt.month
-        holidays_df = build_canadian_holidays(
-            df_airport["ds"].min(),
-            df_airport["ds"].max() + pd.Timedelta(days=forecast_days),
+        export_airports = st.multiselect(
+            "Airports to include in combined export",
+            all_airports,
+            default=all_airports,
+            key="overnight_forecast_export_airports",
         )
 
-        model = Prophet(
-            yearly_seasonality=True,
-            weekly_seasonality=True,
-            daily_seasonality=False,
-            holidays=holidays_df,
-            holidays_prior_scale=20,
-            changepoint_prior_scale=0.3,
-            interval_width=0.80,
-        )
+        forecast_cache: dict[str, dict[str, pd.DataFrame]] = {}
 
-        model.add_regressor("dow", mode="multiplicative")
-        model.add_regressor("month", mode="additive")
+        def compute_overnight_forecast(airport_name: str) -> Optional[dict[str, pd.DataFrame]]:
+            if airport_name in forecast_cache:
+                return forecast_cache[airport_name]
+            df_airport = hist_df[hist_df["Airport"] == airport_name][["Date", "Overnights_A_check"]].rename(
+                columns={"Date": "ds", "Overnights_A_check": "y"}
+            )
+            df_airport = df_airport.groupby("ds").mean().reset_index()
+            if df_airport.empty:
+                return None
 
-        model.fit(df_airport)
+            df_airport["ds"] = pd.to_datetime(df_airport["ds"])
 
-        future = model.make_future_dataframe(periods=forecast_days)
-        future["dow"] = future["ds"].dt.dayofweek
-        future["month"] = future["ds"].dt.month
+            df_airport["dow"] = df_airport["ds"].dt.dayofweek
+            df_airport["month"] = df_airport["ds"].dt.month
+            holidays_df = build_canadian_holidays(
+                df_airport["ds"].min(),
+                df_airport["ds"].max() + pd.Timedelta(days=overnight_forecast_days),
+            )
 
-        forecast = model.predict(future)
+            model = Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=True,
+                daily_seasonality=False,
+                holidays=holidays_df,
+                holidays_prior_scale=20,
+                changepoint_prior_scale=0.3,
+                interval_width=0.80,
+            )
+
+            model.add_regressor("dow", mode="multiplicative")
+            model.add_regressor("month", mode="additive")
+
+            model.fit(df_airport)
+
+            future = model.make_future_dataframe(periods=overnight_forecast_days)
+            future["dow"] = future["ds"].dt.dayofweek
+            future["month"] = future["ds"].dt.month
+
+            forecast = model.predict(future)
+            summary_df = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(overnight_forecast_days).copy()
+            summary_df["ds"] = pd.to_datetime(summary_df["ds"]).dt.strftime("%Y-%m-%d")
+            summary_df = summary_df.rename(
+                columns={
+                    "ds": "Date",
+                    "yhat": "Expected Ground Load",
+                    "yhat_lower": "Low Estimate",
+                    "yhat_upper": "High Estimate",
+                }
+            )
+            summary_df = summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+
+            output = {
+                "forecast": forecast,
+                "summary": summary_df,
+                "history": df_airport,
+            }
+            forecast_cache[airport_name] = output
+            return output
+
+        forecast_payload = compute_overnight_forecast(airport)
+        if not forecast_payload:
+            st.warning("No forecast data available for the selected airport.")
+            st.stop()
+
+        forecast = forecast_payload["forecast"]
+        df_airport = forecast_payload["history"]
 
         fig = px.line(
             forecast,
             x="ds",
             y=["yhat", "yhat_lower", "yhat_upper"],
             labels={"ds": "Date", "value": "Predicted Overnights"},
-            title=f"{airport} Predicted Overnights ({forecast_days}-day horizon)"
+            title=f"{airport} Predicted Overnights ({overnight_forecast_days}-day horizon)"
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        future_forecast = forecast[forecast["ds"] > df_airport["ds"].max()].tail(forecast_days)
+        future_forecast = forecast[forecast["ds"] > df_airport["ds"].max()].tail(overnight_forecast_days)
         if future_forecast.empty:
-            future_forecast = forecast.tail(forecast_days)
+            future_forecast = forecast.tail(overnight_forecast_days)
 
         calendar_metric = st.radio(
             "Calendar values",
@@ -949,17 +1018,7 @@ if not arr_raw.empty and not dep_raw.empty:
 
         # Summary table
         st.subheader("Forecast Summary")
-        summary_df = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(forecast_days).copy()
-        summary_df["ds"] = pd.to_datetime(summary_df["ds"]).dt.strftime("%Y-%m-%d")
-        summary_df = summary_df.rename(
-            columns={
-                "ds": "Date",
-                "yhat": "Expected Ground Load",
-                "yhat_lower": "Low Estimate",
-                "yhat_upper": "High Estimate",
-            }
-        )
-        summary_df = summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+        summary_df = forecast_payload["summary"]
 
         st.dataframe(summary_df, use_container_width=True)
         st.download_button(
@@ -969,6 +1028,21 @@ if not arr_raw.empty and not dep_raw.empty:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"forecast_summary_download_{airport}",
         )
+
+        combined_sheets = {}
+        for export_airport in export_airports:
+            export_payload = compute_overnight_forecast(export_airport)
+            if not export_payload:
+                continue
+            combined_sheets[f"{export_airport} Overnight Forecast"] = export_payload["summary"]
+        if combined_sheets:
+            st.download_button(
+                "Download combined overnight forecasts (XLSX)",
+                data=build_multi_sheet_xlsx(combined_sheets),
+                file_name=f"overnight_forecasts_{GENERATION_STAMP}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="overnight_forecast_combined_download",
+            )
 
         st.caption(
             "Enhanced Prophet model with multiplicative day-of-week effects, monthly trend adjustment, "
@@ -995,7 +1069,7 @@ if not arr_raw.empty and not dep_raw.empty:
     from prophet import Prophet
     import plotly.graph_objects as go
 
-    forecast_days = st.slider(
+    movement_forecast_days = st.slider(
         "Forecast horizon (days ahead)", 7, 180, 60, 1, key="mov_forecast_days"
     )
 
@@ -1050,40 +1124,94 @@ if not arr_raw.empty and not dep_raw.empty:
             key="mov_metric",
         )
         show_historical = st.checkbox("Show historical overlay", value=True, key="mov_show_hist")
-
-        df = daily_mov[daily_mov["Airport"] == airport][["date", "Arrivals", "Departures", "Ground_Load_Index"]]
-        df = df.groupby("date").sum().reset_index()
-
-        df_train = df.rename(columns={"date": "ds", metric: "y"})
-        df_train["ds"] = pd.to_datetime(df_train["ds"])
-        df_train["dow"] = df_train["ds"].dt.dayofweek
-        df_train["month"] = df_train["ds"].dt.month
-
-        holidays_df = build_canadian_holidays(
-            df_train["ds"].min(),
-            df_train["ds"].max() + pd.Timedelta(days=forecast_days),
+        export_airports = st.multiselect(
+            "Airports to include in combined ground load export",
+            sorted(daily_mov["Airport"].unique()),
+            default=sorted(daily_mov["Airport"].unique()),
+            key="mov_ground_load_export_airports",
         )
 
-        # Build Prophet model
-        m = Prophet(
-            yearly_seasonality=True,
-            weekly_seasonality=True,
-            daily_seasonality=False,
-            holidays=holidays_df,
-            holidays_prior_scale=20,
-            changepoint_prior_scale=0.3,
-            interval_width=0.80,
-        )
+        movement_forecast_cache: dict[str, dict[str, pd.DataFrame]] = {}
 
-        m.add_regressor("dow", mode="multiplicative")
-        m.add_regressor("month", mode="additive")
+        def compute_movement_forecast(
+            airport_name: str, metric_name: str
+        ) -> Optional[dict[str, pd.DataFrame]]:
+            cache_key = f"{airport_name}:{metric_name}"
+            if cache_key in movement_forecast_cache:
+                return movement_forecast_cache[cache_key]
 
-        m.fit(df_train[["ds", "y", "dow", "month"]])
-        future = m.make_future_dataframe(periods=forecast_days)
-        future["dow"] = future["ds"].dt.dayofweek
-        future["month"] = future["ds"].dt.month
+            df_airport = daily_mov[daily_mov["Airport"] == airport_name][
+                ["date", "Arrivals", "Departures", "Ground_Load_Index"]
+            ]
+            df_airport = df_airport.groupby("date").sum().reset_index()
+            if df_airport.empty:
+                return None
 
-        forecast = m.predict(future)
+            df_train = df_airport.rename(columns={"date": "ds", metric_name: "y"})
+            df_train["ds"] = pd.to_datetime(df_train["ds"])
+            df_train["dow"] = df_train["ds"].dt.dayofweek
+            df_train["month"] = df_train["ds"].dt.month
+
+            holidays_df = build_canadian_holidays(
+                df_train["ds"].min(),
+                df_train["ds"].max() + pd.Timedelta(days=movement_forecast_days),
+            )
+
+            model = Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=True,
+                daily_seasonality=False,
+                holidays=holidays_df,
+                holidays_prior_scale=20,
+                changepoint_prior_scale=0.3,
+                interval_width=0.80,
+            )
+
+            model.add_regressor("dow", mode="multiplicative")
+            model.add_regressor("month", mode="additive")
+
+            model.fit(df_train[["ds", "y", "dow", "month"]])
+            future = model.make_future_dataframe(periods=movement_forecast_days)
+            future["dow"] = future["ds"].dt.dayofweek
+            future["month"] = future["ds"].dt.month
+
+            forecast = model.predict(future)
+            summary_df = (
+                forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]]
+                .tail(movement_forecast_days)
+                .copy()
+            )
+            summary_df["ds"] = pd.to_datetime(summary_df["ds"]).dt.strftime("%Y-%m-%d")
+            summary_df = summary_df.rename(
+                columns={
+                    "ds": "Date",
+                    "yhat": "Expected Ground Load",
+                    "yhat_lower": "Low Estimate",
+                    "yhat_upper": "High Estimate",
+                }
+            )
+            summary_df = summary_df[
+                ["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]
+            ]
+
+            output = {
+                "forecast": forecast,
+                "summary": summary_df,
+                "history": df_airport,
+                "training": df_train,
+            }
+            movement_forecast_cache[cache_key] = output
+            return output
+
+        movement_payload = compute_movement_forecast(airport, metric)
+        if not movement_payload:
+            st.warning("No forecast data available for the selected airport.")
+            st.stop()
+
+        df = movement_payload["history"]
+        df_train = movement_payload["training"]
+
+        forecast = movement_payload["forecast"]
 
         # --- Plotly chart ---
         fig = go.Figure()
@@ -1152,7 +1280,7 @@ if not arr_raw.empty and not dep_raw.empty:
                 )
 
         fig.update_layout(
-            title=f"{airport} {metric} Forecast ({forecast_days}-day horizon)",
+            title=f"{airport} {metric} Forecast ({movement_forecast_days}-day horizon)",
             xaxis_title="Date",
             yaxis_title=f"{metric} per Day",
             legend_title="Series",
@@ -1162,10 +1290,10 @@ if not arr_raw.empty and not dep_raw.empty:
 
         last_history_date = pd.to_datetime(df_train["ds"].max())
         future_forecast = forecast[pd.to_datetime(forecast["ds"]) > last_history_date].tail(
-            forecast_days
+            movement_forecast_days
         )
         if future_forecast.empty:
-            future_forecast = forecast.tail(forecast_days)
+            future_forecast = forecast.tail(movement_forecast_days)
 
         movement_calendar_metric = st.radio(
             "Calendar values",
@@ -1191,23 +1319,7 @@ if not arr_raw.empty and not dep_raw.empty:
 
         # Summary table
         st.subheader("Forecast Summary")
-        movement_summary_df = (
-            forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]]
-            .tail(forecast_days)
-            .copy()
-        )
-        movement_summary_df["ds"] = pd.to_datetime(movement_summary_df["ds"]).dt.strftime("%Y-%m-%d")
-        movement_summary_df = movement_summary_df.rename(
-            columns={
-                "ds": "Date",
-                "yhat": "Expected Ground Load",
-                "yhat_lower": "Low Estimate",
-                "yhat_upper": "High Estimate",
-            }
-        )
-        movement_summary_df = movement_summary_df[
-            ["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]
-        ]
+        movement_summary_df = movement_payload["summary"]
 
         st.dataframe(movement_summary_df, use_container_width=True)
         st.download_button(
@@ -1219,6 +1331,95 @@ if not arr_raw.empty and not dep_raw.empty:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"movement_summary_download_{airport}_{metric}",
         )
+
+        combined_sheets = {}
+        for export_airport in export_airports:
+            export_payload = compute_movement_forecast(export_airport, "Ground_Load_Index")
+            if not export_payload:
+                continue
+            combined_sheets[f"{export_airport} Ground Load Forecast"] = export_payload["summary"]
+        if combined_sheets:
+            st.download_button(
+                "Download combined ground load forecasts (XLSX)",
+                data=build_multi_sheet_xlsx(combined_sheets),
+                file_name=f"ground_load_forecasts_{GENERATION_STAMP}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="movement_ground_load_combined_download",
+            )
+
+        combined_forecast_sheets = {}
+
+        def compute_overnight_export_summary(airport_name: str) -> Optional[pd.DataFrame]:
+            if hist_df.empty:
+                return None
+            df_airport = hist_df[hist_df["Airport"] == airport_name][["Date", "Overnights_A_check"]].rename(
+                columns={"Date": "ds", "Overnights_A_check": "y"}
+            )
+            df_airport = df_airport.groupby("ds").mean().reset_index()
+            if df_airport.empty:
+                return None
+
+            df_airport["ds"] = pd.to_datetime(df_airport["ds"])
+            df_airport["dow"] = df_airport["ds"].dt.dayofweek
+            df_airport["month"] = df_airport["ds"].dt.month
+
+            holidays_df = build_canadian_holidays(
+                df_airport["ds"].min(),
+                df_airport["ds"].max() + pd.Timedelta(days=overnight_forecast_days),
+            )
+
+            model = Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=True,
+                daily_seasonality=False,
+                holidays=holidays_df,
+                holidays_prior_scale=20,
+                changepoint_prior_scale=0.3,
+                interval_width=0.80,
+            )
+
+            model.add_regressor("dow", mode="multiplicative")
+            model.add_regressor("month", mode="additive")
+
+            model.fit(df_airport)
+
+            future = model.make_future_dataframe(periods=overnight_forecast_days)
+            future["dow"] = future["ds"].dt.dayofweek
+            future["month"] = future["ds"].dt.month
+
+            forecast = model.predict(future)
+            summary_df = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(
+                overnight_forecast_days
+            ).copy()
+            summary_df["ds"] = pd.to_datetime(summary_df["ds"]).dt.strftime("%Y-%m-%d")
+            summary_df = summary_df.rename(
+                columns={
+                    "ds": "Date",
+                    "yhat": "Expected Ground Load",
+                    "yhat_lower": "Low Estimate",
+                    "yhat_upper": "High Estimate",
+                }
+            )
+            return summary_df[["Date", "Expected Ground Load", "Low Estimate", "High Estimate"]]
+
+        for export_airport in export_airports:
+            overnight_summary = compute_overnight_export_summary(export_airport)
+            if overnight_summary is not None:
+                combined_forecast_sheets[f"{export_airport} Overnight Forecast"] = overnight_summary
+            ground_load_payload = compute_movement_forecast(export_airport, "Ground_Load_Index")
+            if ground_load_payload:
+                combined_forecast_sheets[
+                    f"{export_airport} Ground Load Forecast"
+                ] = ground_load_payload["summary"]
+
+        if combined_forecast_sheets:
+            st.download_button(
+                "Download combined overnight + ground load forecast (XLSX)",
+                data=build_multi_sheet_xlsx(combined_forecast_sheets),
+                file_name=f"combined_forecasts_{GENERATION_STAMP}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="combined_forecast_download",
+            )
 
         st.caption(
             "Forecast generated with a tuned Prophet model using multiplicative day-of-week effects, monthly adjustments, "
