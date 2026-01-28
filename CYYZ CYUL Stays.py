@@ -200,12 +200,14 @@ def build_single_sheet_xlsx(df: pd.DataFrame, sheet_name: str) -> bytes:
     return buffer.getvalue()
 
 
-def round_forecast_summary(df: pd.DataFrame, decimals: int = 2) -> pd.DataFrame:
+def round_forecast_summary(df: pd.DataFrame, decimals: int = 0) -> pd.DataFrame:
     """Round forecast summary numeric columns to a consistent precision."""
     df = df.copy()
     numeric_cols = df.select_dtypes(include=["number"]).columns
     if len(numeric_cols) > 0:
         df[numeric_cols] = df[numeric_cols].round(decimals)
+        if decimals == 0:
+            df[numeric_cols] = df[numeric_cols].astype("Int64")
     return df
 
 
@@ -377,7 +379,7 @@ def render_monthly_calendar_view(
     def default_formatter(val):
         if val is None:
             return ""
-        return f"{val:.2f}"
+        return f"{val:.0f}"
 
     fmt = value_formatter or default_formatter
 
